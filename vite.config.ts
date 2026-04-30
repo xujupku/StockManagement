@@ -14,10 +14,10 @@ export default defineConfig({
         },
       },
       '/api': {
-        target: 'http://39.96.197.206:8001',
+        target: 'http://39.96.197.206:8000',
         changeOrigin: true,
         headers: {
-          Origin: 'http://39.96.197.206:8001',
+          Origin: 'http://39.96.197.206:8000',
         },
       },
     },

@@ -200,32 +200,25 @@ async def run_hermes(request: QueryRequest):
 
 @app.post("/api/v1/run_stream")
 async def run_hermes_stream(request: QueryRequest):
-    
-    # 1. 定义一个生成器函数
+
     async def generate():
-        agent = AIAgent(base_url=request.base_url, model=request.model, quiet_mode=True)
-        
-        # 注意：hermes-agent 的具体 API 可能会随版本迭代。
-        # 通常会提供一个 stream_conversation 或类似的方法来返回一个迭代器。
-        # 如果源码中是一个同步的生成器，需要放到线程里执行或用异步包裹。
-        
         try:
-            # 假设底层暴露了 stream_conversation 生成器
-            for chunk in agent.stream_conversation(request.query):
-                # 按照 SSE 的规范格式化数据： "data: 你的内容\n\n"
-                # chunk 可能是字符串，也可能是包含状态的字典(比如 "正在使用搜索工具...")
-                yield f"data: {chunk}\n\n"
-                
-                # 稍微让出一下 CPU，确保异步服务不被卡死
-                await asyncio.sleep(0.01)
-                
-            # 结束标志
+            agent = AIAgent(base_url=request.base_url, model=request.model, quiet_mode=True)
+            # AIAgent 仅提供同步 run_conversation，放到线程中执行
+            result = await asyncio.to_thread(agent.run_conversation, request.query)
+
+            # 将完整结果按块输出，模拟流式效果
+            chunk_size = 4
+            text = str(result) if result else ""
+            for i in range(0, len(text), chunk_size):
+                yield f"data: {text[i:i+chunk_size]}\n\n"
+                await asyncio.sleep(0.02)
+
             yield "data: [DONE]\n\n"
-            
+
         except Exception as e:
             yield f"data: [ERROR] {str(e)}\n\n"
 
-    # 2. 使用 StreamingResponse 返回，设置 media_type 为 text/event-stream
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.get("/health")
