@@ -10,8 +10,10 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from dotenv import load_dotenv
 import httpx
 
+from pydantic import BaseModel
+
 from models import AnalyzeRequest, AnalyzeResponse
-from agent import HermesAgent
+from analysis_engine import HermesAgent
 from holdings_db import (
     init_db, get_all_holdings, add_holding, update_holding, delete_holding,
     HoldingItem, HoldingUpdate,
