@@ -20,6 +20,11 @@ from holdings_db import (
     get_watchlist, add_watch, remove_watch, WatchItem,
 )
 
+from fastapi.responses import StreamingResponse
+import sys
+sys.path.append('/usr/local/lib/hermes-agent')
+from run_agent import AIAgent  # 引入 Hermes Agent 核心类
+
 load_dotenv()
 
 
@@ -161,6 +166,65 @@ init_db()
 # 初始化 Agent
 agent = HermesAgent()
 
+class QueryRequest(BaseModel):
+    query: str
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-v4-pro"  # 你可以在这里指定使用的模型
+
+@app.post("/api/v1/run")
+async def run_hermes(request: QueryRequest):
+    try:
+        # Hermes 的底层调用是同步的，为了不阻塞 FastAPI，放在线程中执行
+        def _run_agent():
+            # 初始化 Agent：quiet_mode=True 会关闭花哨的终端动画，适合服务端运行
+            agent = AIAgent(
+                base_url=request.base_url,
+                model=request.model,
+                quiet_mode=True 
+            )
+            # 传入用户的 query 并获取执行完成后的最终文本/产物
+            return agent.run_conversation(request.query)
+
+        # 异步执行
+        artifact = await asyncio.to_thread(_run_agent)
+        
+        return {
+            "status": "success",
+            "artifact": artifact
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Hermes 执行失败: {str(e)}")
+
+@app.post("/api/v1/run_stream")
+async def run_hermes_stream(request: QueryRequest):
+    
+    # 1. 定义一个生成器函数
+    async def generate():
+        agent = AIAgent(base_url=request.base_url, model=request.model, quiet_mode=True)
+        
+        # 注意：hermes-agent 的具体 API 可能会随版本迭代。
+        # 通常会提供一个 stream_conversation 或类似的方法来返回一个迭代器。
+        # 如果源码中是一个同步的生成器，需要放到线程里执行或用异步包裹。
+        
+        try:
+            # 假设底层暴露了 stream_conversation 生成器
+            for chunk in agent.stream_conversation(request.query):
+                # 按照 SSE 的规范格式化数据： "data: 你的内容\n\n"
+                # chunk 可能是字符串，也可能是包含状态的字典(比如 "正在使用搜索工具...")
+                yield f"data: {chunk}\n\n"
+                
+                # 稍微让出一下 CPU，确保异步服务不被卡死
+                await asyncio.sleep(0.01)
+                
+            # 结束标志
+            yield "data: [DONE]\n\n"
+            
+        except Exception as e:
+            yield f"data: [ERROR] {str(e)}\n\n"
+
+    # 2. 使用 StreamingResponse 返回，设置 media_type 为 text/event-stream
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 @app.get("/health")
 async def health():
