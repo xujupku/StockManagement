@@ -4,6 +4,7 @@ import { useTheme } from '../context/ThemeContext';
 const navItems = [
   { to: '/', label: '仪表盘', icon: '📊' },
   { to: '/portfolio', label: '我的持仓', icon: '💼' },
+  { to: '/chat', label: 'AI咨询', icon: '💬' },
   { to: '/advisor', label: '投资分析', icon: '🤖' },
   { to: '/picker', label: 'AI推股', icon: '🎯' },
   { to: '/market', label: '市场行情', icon: '📈' },

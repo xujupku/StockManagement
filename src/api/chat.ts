@@ -1,4 +1,4 @@
-const API_URL = '/api/v1/run_stream';
+const API_URL = '/api/v1/run';
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
@@ -33,29 +33,9 @@ export async function chatWithAIStream(
     throw new Error(`请求失败 (${response.status}): ${errText || response.statusText}`);
   }
 
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error('无法获取响应流');
-
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() ?? '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const data = trimmed.slice(6);
-      if (data === '[DONE]') return;
-      if (data.startsWith('[ERROR]')) {
-        throw new Error(data.slice(8));
-      }
-      onChunk(data);
-    }
+  const data = await response.json();
+  const text = data.response || '';
+  if (text) {
+    onChunk(text);
   }
 }

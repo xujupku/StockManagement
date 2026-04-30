@@ -6,6 +6,7 @@ import Dashboard from './pages/Dashboard';
 import Portfolio from './pages/Portfolio';
 import AIAdvisor from './pages/AIAdvisor';
 import AIStockPicker from './pages/AIStockPicker';
+import Chat from './pages/Chat';
 import Market from './pages/Market';
 import Settings from './pages/Settings';
 
@@ -18,6 +19,7 @@ export default function App() {
             <Route element={<Layout />}>
               <Route path="/" element={<Dashboard />} />
               <Route path="/portfolio" element={<Portfolio />} />
+              <Route path="/chat" element={<Chat />} />
               <Route path="/advisor" element={<AIAdvisor />} />
               <Route path="/picker" element={<AIStockPicker />} />
               <Route path="/market" element={<Market />} />

@@ -176,23 +176,25 @@ class QueryRequest(BaseModel):
 @app.post("/api/v1/run")
 async def run_hermes(request: QueryRequest):
     try:
-        # Hermes 的底层调用是同步的，为了不阻塞 FastAPI，放在线程中执行
         def _run_agent():
-            # 初始化 Agent：quiet_mode=True 会关闭花哨的终端动画，适合服务端运行
             agent = AIAgent(
                 base_url=request.base_url,
                 model=request.model,
                 quiet_mode=True 
             )
-            # 传入用户的 query 并获取执行完成后的最终文本/产物
             return agent.run_conversation(request.query)
 
-        # 异步执行
-        artifact = await asyncio.to_thread(_run_agent)
-        
+        result = await asyncio.to_thread(_run_agent)
+
+        # 只返回 final_response
+        if isinstance(result, dict):
+            response_text = result.get('final_response', '') or ''
+        else:
+            response_text = str(result) if result else ''
+
         return {
             "status": "success",
-            "artifact": artifact
+            "response": response_text
         }
         
     except Exception as e:
@@ -207,9 +209,14 @@ async def run_hermes_stream(request: QueryRequest):
             # AIAgent 仅提供同步 run_conversation，放到线程中执行
             result = await asyncio.to_thread(agent.run_conversation, request.query)
 
-            # 将完整结果按块输出，模拟流式效果
+            # 提取 final_response 字段
+            if isinstance(result, dict):
+                text = result.get('final_response', '') or ''
+            else:
+                text = str(result) if result else ""
+
+            # 将结果按块输出，模拟流式效果
             chunk_size = 4
-            text = str(result) if result else ""
             for i in range(0, len(text), chunk_size):
                 yield f"data: {text[i:i+chunk_size]}\n\n"
                 await asyncio.sleep(0.02)
