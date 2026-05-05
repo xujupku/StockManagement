@@ -1,3 +1,5 @@
+import { authFetch } from './authFetch';
+
 const BASE = '/api/cash';
 
 export interface CashBalances {
@@ -7,13 +9,13 @@ export interface CashBalances {
 }
 
 export async function fetchCash(): Promise<CashBalances> {
-  const res = await fetch(BASE);
+  const res = await authFetch(BASE);
   if (!res.ok) throw new Error('获取现金失败');
   return res.json();
 }
 
 export async function updateCashApi(currency: string, amount: number): Promise<CashBalances> {
-  const res = await fetch(BASE, {
+  const res = await authFetch(BASE, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ currency, amount }),

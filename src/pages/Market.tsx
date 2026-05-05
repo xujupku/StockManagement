@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useStocks } from '../context/StockContext';
+import { authFetch } from '../api/authFetch';
 
 interface WatchStock {
   code: string;
@@ -20,7 +21,7 @@ function getSymbol(code: string) {
 
 async function fetchWatchlist(): Promise<WatchStock[]> {
   try {
-    const res = await fetch('/api/watchlist');
+    const res = await authFetch('/api/watchlist');
     if (!res.ok) return [];
     return res.json();
   } catch { return []; }
@@ -29,14 +30,14 @@ async function fetchWatchlist(): Promise<WatchStock[]> {
 async function fetchQuotes(codes: string[]): Promise<Record<string, Quote>> {
   if (codes.length === 0) return {};
   try {
-    const res = await fetch(`/api/quotes?codes=${encodeURIComponent(codes.join(','))}`);
+    const res = await authFetch(`/api/quotes?codes=${encodeURIComponent(codes.join(','))}`);
     if (!res.ok) return {};
     return res.json();
   } catch { return {}; }
 }
 
 async function addWatch(code: string, name: string) {
-  await fetch('/api/watchlist', {
+  await authFetch('/api/watchlist', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, name }),
@@ -44,7 +45,7 @@ async function addWatch(code: string, name: string) {
 }
 
 async function removeWatch(code: string) {
-  await fetch(`/api/watchlist/${encodeURIComponent(code)}`, { method: 'DELETE' });
+  await authFetch(`/api/watchlist/${encodeURIComponent(code)}`, { method: 'DELETE' });
 }
 
 function AddStockModal({ onClose, onAdd }: { onClose: () => void; onAdd: (code: string, name: string) => void }) {

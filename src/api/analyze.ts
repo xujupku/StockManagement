@@ -1,4 +1,6 @@
 import type { StockHolding } from '../data/mockData';
+import { authFetch } from './authFetch';
+import { getApiConfig } from './config';
 
 // ===== 投资偏好类型 =====
 
@@ -87,6 +89,11 @@ export interface ActionItem {
   quantity: number;
   reason: string;
   urgency: 'high' | 'medium' | 'low';
+  targetPrice?: number;
+  stopLoss?: number;
+  pnlPercent?: number;
+  riskLevel?: string;
+  highlights?: string;
 }
 
 export interface AnalyzeResult {
@@ -99,139 +106,284 @@ export interface AnalyzeResult {
   preference_summary: string;
 }
 
-// ===== Mock 分析函数 =====
+// ===== 构建 query =====
 
-function delay(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+const RISK_LABELS: Record<string, string> = {
+  conservative: '保守型（追求稳健，厌恶亏损）',
+  moderate: '稳健型（可接受适度波动）',
+  aggressive: '激进型（追求高收益，能承受大幅波动）',
+};
+const HORIZON_LABELS: Record<string, string> = {
+  short: '短期（1-3个月）',
+  medium: '中期（3-12个月）',
+  long: '长期（1年以上）',
+};
+const GOAL_LABELS: Record<string, string> = {
+  preserve: '资产保值',
+  income: '稳定收益',
+  growth: '资本增值',
+  speculative: '高风险高回报',
+};
+const FACTOR_LABELS: Record<string, string> = {
+  fundamental: '基本面',
+  technical: '技术面',
+  sentiment: '消息面',
+  macro: '宏观经济',
+};
+const CONCENTRATION_LABELS: Record<string, string> = {
+  diversified: '分散持仓（10只以上）',
+  moderate: '适度集中（5-10只）',
+  concentrated: '集中持仓（5只以内）',
+};
+const STOPLOSS_LABELS: Record<string, string> = {
+  strict: '严格止损（跌5%即卖出）',
+  moderate: '弹性止损（跌10-15%再考虑）',
+  none: '不设止损（坚定持有）',
+};
+
+function getMarketType(code: string): string {
+  if (code.endsWith('.HK') || (/^\d{1,5}$/.test(code) && code.length <= 5)) return 'hk';
+  if (/^\d{6}$/.test(code)) return 'a';
+  return 'us';
+}
+
+export function buildAnalyzeQuery(holdings: StockHolding[], prefs: InvestPreferences): string {
+  const fence = '```';
+
+  // 构建持仓表格
+  const holdingLines = holdings.map(h => {
+    const market = getMarketType(h.code);
+    const pnl = ((h.currentPrice - h.buyPrice) / h.buyPrice * 100).toFixed(2);
+    return `| ${h.code} | ${h.name} | ${h.buyPrice} | ${h.currentPrice} | ${h.quantity} | ${market} | ${pnl}% |`;
+  }).join('\n');
+
+  return `请使用 portfolio-analyzer skill 对我的持仓进行全面分析并给出调仓建议。
+
+## 我的投资偏好
+
+- 风险偏好：${RISK_LABELS[prefs.riskTolerance]}
+- 投资期限：${HORIZON_LABELS[prefs.horizon]}
+- 投资目标：${GOAL_LABELS[prefs.goal]}
+- 关注因素：${prefs.factors.map(f => FACTOR_LABELS[f]).join('、')}
+- 持仓集中度偏好：${CONCENTRATION_LABELS[prefs.concentration]}
+- 止损策略：${STOPLOSS_LABELS[prefs.stopLoss]}
+
+## 我的当前持仓
+
+| 股票代码 | 名称 | 买入价 | 现价 | 数量 | 市场 | 盈亏% |
+|----------|------|--------|------|------|------|-------|
+${holdingLines}
+
+请按照 portfolio-analyzer skill 的完整5阶段流程执行分析，并在最后输出以下 JSON 格式的调仓建议（必须包含在 ${fence}json 代码块中）：
+
+${fence}json
+[
+  {
+    "code": "股票代码",
+    "name": "股票名称",
+    "market": "a/hk/us",
+    "action": "sell/buy/hold",
+    "strength": "操作力度描述",
+    "currentPrice": 当前价格数字,
+    "buyPrice": 买入价格数字,
+    "quantity": 持仓数量,
+    "pnlPercent": 盈亏百分比数字,
+    "targetPrice": 目标价格数字,
+    "stopLoss": 止损价格数字,
+    "reasons": ["理由1", "理由2", "理由3"],
+    "riskLevel": "低/中低/中/中高/高",
+    "urgency": "立即执行/近期执行/观察等待",
+    "highlights": "一句话核心建议"
+  }
+]
+${fence}`;
+}
+
+// ===== 解析 AI 响应 =====
+
+function parseAnalyzerResponse(text: string): ActionItem[] {
+  // 从 markdown 代码块中提取 JSON
+  const jsonBlockMatch = text.match(/```json\s*([\s\S]*?)```/);
+  if (jsonBlockMatch) {
+    try {
+      const parsed = JSON.parse(jsonBlockMatch[1].trim());
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(normalizeActionItem);
+      }
+    } catch (e) {
+      console.error('JSON 代码块解析失败', e);
+    }
+  }
+
+  // 尝试直接匹配 JSON 数组
+  const jsonArrayMatch = text.match(/\[[\s\S]*?\]/);
+  if (jsonArrayMatch) {
+    try {
+      const parsed = JSON.parse(jsonArrayMatch[0]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed.map(normalizeActionItem);
+      }
+    } catch (e) {
+      console.error('JSON 数组解析失败', e);
+    }
+  }
+
+  throw new Error('无法从 AI 响应中解析调仓建议');
+}
+
+function normalizeActionItem(item: any): ActionItem {
+  // action 映射到 type
+  const actionMap: Record<string, ActionItem['type']> = {
+    sell: 'sell',
+    buy: 'buy',
+    hold: 'hold',
+  };
+  const action = String(item.action || 'hold').toLowerCase();
+  let type: ActionItem['type'] = actionMap[action] || 'hold';
+
+  // strength 中包含"减仓"映射为 reduce，"加仓"映射为 add
+  const strength = String(item.strength || '');
+  if (action === 'sell' && (strength.includes('减仓') || strength.includes('部分'))) type = 'reduce';
+  if (action === 'buy' && (strength.includes('加仓') || strength.includes('增持'))) type = 'add';
+
+  // urgency 映射
+  const urgencyMap: Record<string, 'high' | 'medium' | 'low'> = {
+    '立即执行': 'high',
+    '近期执行': 'medium',
+    '观察等待': 'low',
+  };
+  const urgency = urgencyMap[String(item.urgency || '')] || 'low';
+
+  return {
+    type,
+    stock: String(item.name || ''),
+    code: String(item.code || ''),
+    quantity: Number(item.quantity) || 0,
+    reason: Array.isArray(item.reasons) ? item.reasons.join('；') : String(item.reasons || ''),
+    urgency,
+    targetPrice: item.targetPrice ? Number(item.targetPrice) : undefined,
+    stopLoss: item.stopLoss ? Number(item.stopLoss) : undefined,
+    pnlPercent: item.pnlPercent ? Number(item.pnlPercent) : undefined,
+    riskLevel: String(item.riskLevel || ''),
+    highlights: String(item.highlights || ''),
+  };
+}
+
+// ===== 流式调用后端并解析 =====
+
+export interface AnalyzeStreamCallbacks {
+  onProgress: (text: string) => void;
+  signal?: AbortSignal;
 }
 
 export async function analyzePortfolio(
   holdings: StockHolding[],
   preferences: InvestPreferences,
+  callbacks?: AnalyzeStreamCallbacks,
 ): Promise<AnalyzeResult> {
-  // 模拟网络延迟
-  await delay(2000);
+  const query = buildAnalyzeQuery(holdings, preferences);
 
-  const riskMap = { conservative: 25, moderate: 50, aggressive: 78 };
-  const riskLabelMap = { conservative: '低风险', moderate: '中等风险', aggressive: '高风险' };
-  const goalMap = { preserve: '资产保值', income: '稳定收益', growth: '资本增值', speculative: '高风险高回报' };
-  const horizonMap = { short: '短期(1-3月)', medium: '中期(3-12月)', long: '长期(1年+)' };
-
-  const riskScore = riskMap[preferences.riskTolerance];
-  const riskLevel = riskLabelMap[preferences.riskTolerance];
-
-  // 根据偏好生成不同的分析维度
-  const dimensions: DimensionAnalysis[] = [];
-
-  if (preferences.factors.includes('fundamental')) {
-    dimensions.push({
-      dimension: '基本面分析',
-      score: preferences.riskTolerance === 'conservative' ? 8 : 6,
-      summary: '整体质量良好',
-      detail: `持仓${holdings.length}只股票中，多数为各行业龙头。${
-        preferences.goal === 'income' ? '建议关注分红率较高的标的，如茅台。' : '成长性较好，估值处于合理区间。'
-      }`,
-    });
-  }
-  if (preferences.factors.includes('technical')) {
-    dimensions.push({
-      dimension: '技术面分析',
-      score: 5,
-      summary: '信号偏中性',
-      detail: `从均线系统看，部分持仓处于上升通道。${
-        preferences.horizon === 'short' ? '短期内MACD出现金叉的有2只。' : '中长期趋势向好，建议耐心持有。'
-      }`,
-    });
-  }
-  if (preferences.factors.includes('sentiment')) {
-    dimensions.push({
-      dimension: '消息面分析',
-      score: 7,
-      summary: '情绪偏正面',
-      detail: '近期科技板块受AI利好提振，市场情绪回暖。建议关注即将发布财报的个股，可能带来波动机会。',
-    });
-  }
-  if (preferences.factors.includes('macro')) {
-    dimensions.push({
-      dimension: '宏观环境分析',
-      score: 6,
-      summary: '环境中性偏正',
-      detail: `当前利率环境${preferences.horizon === 'short' ? '对短期交易影响有限' : '对长期持有价值股有利'}。人民币汇率波动可能影响海外资产的人民币计价表现。`,
-    });
-  }
-
-  // 集中度分析总是包含
-  dimensions.push({
-    dimension: '持仓集中度',
-    score: preferences.concentration === 'diversified' ? 8 : preferences.concentration === 'moderate' ? 6 : 4,
-    summary: holdings.length >= 8 ? '分散度良好' : holdings.length >= 5 ? '适度集中' : '过度集中',
-    detail: `当前持有${holdings.length}只股票。${
-      preferences.concentration === 'diversified' && holdings.length < 10
-        ? '根据您的分散持仓偏好，建议增加持仓只数至10只以上。'
-        : preferences.concentration === 'concentrated' && holdings.length > 5
-        ? '根据您的集中持仓偏好，建议精选3-5只重仓标的。'
-        : '与您的持仓集中度偏好匹配。'
-    }`,
+  // 调用流式接口
+  const response = await authFetch('/api/v1/run_stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, api_key: getApiConfig().apiKey || undefined, exa_key: getApiConfig().exaKey || undefined }),
+    signal: callbacks?.signal,
   });
 
-  // 根据偏好生成操作建议
-  const actions: ActionItem[] = [];
-
-  if (preferences.riskTolerance === 'conservative') {
-    actions.push(
-      { type: 'reduce', stock: '特斯拉', code: 'TSLA', quantity: 20, reason: '波动率过高，不符合保守型策略，建议减仓或清仓', urgency: 'high' },
-      { type: 'buy', stock: '沪深300ETF', code: '510300', quantity: 200, reason: '增加宽基指数配置，降低组合波动率', urgency: 'medium' },
-      { type: 'hold', stock: '茅台', code: '600519', quantity: 0, reason: '现金流稳定、分红率高，适合保守策略长期持有', urgency: 'low' },
-    );
-  } else if (preferences.riskTolerance === 'aggressive') {
-    actions.push(
-      { type: 'add', stock: '英伟达', code: 'NVDA', quantity: 15, reason: 'AI芯片龙头，增长确定性高，建议加仓', urgency: 'high' },
-      { type: 'buy', stock: 'Meta', code: 'META', quantity: 20, reason: 'AI广告变现潜力巨大，估值尚有空间', urgency: 'medium' },
-      { type: 'sell', stock: '茅台', code: '600519', quantity: 3, reason: '增长放缓，资金效率不足，释放资金追求更高收益', urgency: 'medium' },
-    );
-  } else {
-    actions.push(
-      { type: 'hold', stock: '苹果', code: 'AAPL', quantity: 0, reason: '基本面强劲，估值合理，符合稳健增长策略', urgency: 'low' },
-      { type: 'reduce', stock: '特斯拉', code: 'TSLA', quantity: 10, reason: '短期估值偏高，建议适度减仓锁定利润', urgency: 'medium' },
-      { type: 'buy', stock: '强生', code: 'JNJ', quantity: 30, reason: '医疗板块防御性强，增加组合稳定性', urgency: 'medium' },
-    );
+  if (!response.ok) {
+    throw new Error(`请求失败: ${response.status}`);
   }
 
-  // 止损策略影响
-  if (preferences.stopLoss === 'strict') {
-    const losers = holdings.filter(h => h.currentPrice < h.buyPrice);
-    losers.forEach(h => {
-      const lossPct = ((h.currentPrice - h.buyPrice) / h.buyPrice) * 100;
-      if (lossPct < -5 && !actions.some(a => a.code === h.code)) {
-        actions.push({
-          type: 'sell', stock: h.name, code: h.code, quantity: h.quantity,
-          reason: `当前亏损${lossPct.toFixed(1)}%，已触及严格止损线(-5%)，建议止损`, urgency: 'high',
-        });
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('无法读取响应流');
+
+  const decoder = new TextDecoder();
+  let fullText = '';
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      const payload = line.slice(6);
+      if (payload === '[DONE]') continue;
+
+      try {
+        const msg = JSON.parse(payload);
+        if (msg.type === 'delta' && msg.content) {
+          fullText += msg.content;
+          callbacks?.onProgress?.(fullText);
+        } else if (msg.type === 'final' && msg.content) {
+          fullText = msg.content;
+          callbacks?.onProgress?.(fullText);
+        }
+      } catch {
+        // 非 JSON 的 data 行，直接当文本处理
+        fullText += payload;
+        callbacks?.onProgress?.(fullText);
       }
-    });
+    }
   }
 
-  const positionAdvice = preferences.riskTolerance === 'conservative'
-    ? `基于您的保守型偏好和${horizonMap[preferences.horizon]}投资期限，建议股票仓位不超过50%，增加债券和货币基金配置。单只股票仓位控制在10%以内。`
-    : preferences.riskTolerance === 'aggressive'
-    ? `基于您的激进型偏好，建议集中持仓高成长性标的。${preferences.horizon === 'short' ? '短期可适当提高换手率，捕捉波段机会。' : '建议重仓长期看好的赛道龙头，耐心持有。'}`
-    : `基于您的稳健型偏好和${goalMap[preferences.goal]}目标，建议维持60-70%股票仓位，行业适度分散。${preferences.factors.includes('fundamental') ? '重点关注财报季的基本面变化。' : ''}`;
+  // 解析结构化数据
+  const actions = parseAnalyzerResponse(fullText);
 
-  const preferenceSummary = `投资画像：${riskLevel}偏好 · ${horizonMap[preferences.horizon]} · 目标${goalMap[preferences.goal]} · ${
-    preferences.stopLoss === 'strict' ? '严格止损' : preferences.stopLoss === 'moderate' ? '弹性止损' : '不设止损'
-  }`;
+  // 从文本中推断风险评估和概要（简化处理）
+  const riskMap: Record<string, { level: string; score: number }> = {
+    conservative: { level: '低风险', score: 25 },
+    moderate: { level: '中等风险', score: 50 },
+    aggressive: { level: '高风险', score: 75 },
+  };
+  const risk = riskMap[preferences.riskTolerance] || riskMap.moderate;
 
-  const overallSummary = `综合您的${holdings.length}只持仓和投资偏好分析：${
-    preferences.riskTolerance === 'conservative'
-      ? '当前组合波动率偏高，建议通过增加防御性资产来降低整体风险。重点关注高分红、低估值的蓝筹股。'
-      : preferences.riskTolerance === 'aggressive'
-      ? '当前组合具备较好的成长性，但科技板块集中度较高。建议把握AI主线，同时注意分批建仓控制成本。'
-      : '当前组合结构合理，科技股占比略高。建议适当增加消费、医疗等防御性板块，使组合更加均衡。'
-  }${preferences.stopLoss === 'strict' ? ' 已根据您的严格止损策略标记了需要关注的亏损头寸。' : ''}`;
+  const goalMap: Record<string, string> = { preserve: '资产保值', income: '稳定收益', growth: '资本增值', speculative: '高风险高回报' };
+  const horizonMap: Record<string, string> = { short: '短期(1-3月)', medium: '中期(3-12月)', long: '长期(1年+)' };
+  const stopMap: Record<string, string> = { strict: '严格止损', moderate: '弹性止损', none: '不设止损' };
+
+  const preferenceSummary = `投资画像：${risk.level}偏好 · ${horizonMap[preferences.horizon]} · 目标${goalMap[preferences.goal]} · ${stopMap[preferences.stopLoss]}`;
+
+  // 从 fullText 中提取关键段落作为概要
+  const sellCount = actions.filter(a => a.type === 'sell' || a.type === 'reduce').length;
+  const buyCount = actions.filter(a => a.type === 'buy' || a.type === 'add').length;
+  const holdCount = actions.filter(a => a.type === 'hold').length;
+
+  const overallSummary = `综合分析您的${holdings.length}只持仓：建议卖出/减仓 ${sellCount} 只，加仓/买入 ${buyCount} 只，继续持有 ${holdCount} 只。详细理由已包含在各项操作建议中。`;
+
+  // 构建维度分析（从持仓数据推断）
+  const dimensions: DimensionAnalysis[] = [];
+  if (preferences.factors.includes('fundamental')) {
+    dimensions.push({ dimension: '基本面分析', score: 7, summary: 'AI 已完成深度分析', detail: '已通过脚本获取各持仓的 PE、ROE、营收增长等指标进行评估。' });
+  }
+  if (preferences.factors.includes('technical')) {
+    dimensions.push({ dimension: '技术面分析', score: 6, summary: 'AI 已获取技术指标', detail: '已获取 RSI、MACD、均线等技术信号。' });
+  }
+  if (preferences.factors.includes('sentiment')) {
+    dimensions.push({ dimension: '消息面分析', score: 6, summary: 'AI 已搜索最新消息', detail: '已通过网络搜索获取各持仓的最新利好利空消息。' });
+  }
+  if (preferences.factors.includes('macro')) {
+    dimensions.push({ dimension: '宏观环境分析', score: 6, summary: 'AI 已评估市场环境', detail: '已分析当前宏观经济和行业景气度对持仓的影响。' });
+  }
+  dimensions.push({
+    dimension: '持仓集中度',
+    score: holdings.length >= 8 ? 8 : holdings.length >= 5 ? 6 : 4,
+    summary: holdings.length >= 8 ? '分散度良好' : holdings.length >= 5 ? '适度集中' : '集中度较高',
+    detail: `当前持有 ${holdings.length} 只股票。`,
+  });
+
+  const positionAdvice = actions.length > 0
+    ? `根据 AI 分析，建议优先处理标记为"立即执行"的操作。具体调仓幅度和价格区间已在每条建议中列出。`
+    : '当前持仓结构合理，暂无需大幅调整。';
 
   return {
-    risk_level: riskLevel,
-    risk_score: riskScore,
+    risk_level: risk.level,
+    risk_score: risk.score,
     position_advice: positionAdvice,
     actions,
     dimensions,

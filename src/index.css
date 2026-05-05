@@ -26,3 +26,41 @@ body {
 .dark ::-webkit-scrollbar-thumb {
   background: #475569;
 }
+
+/* 聊天气泡中的 Markdown 表格 */
+.chat-markdown table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin: 0.5rem 0;
+}
+.chat-markdown .table-wrapper {
+  overflow-x: auto;
+}
+.chat-markdown thead {
+  background: #f1f5f9;
+}
+.dark .chat-markdown thead {
+  background: #1e293b;
+}
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid #e2e8f0;
+  padding: 0.4rem 0.6rem;
+  white-space: normal;
+  word-break: break-word;
+}
+.dark .chat-markdown th,
+.dark .chat-markdown td {
+  border-color: #475569;
+}
+.chat-markdown th {
+  font-weight: 600;
+  text-align: left;
+  background: #f8fafc;
+}
+.dark .chat-markdown th {
+  background: #1e293b;
+}

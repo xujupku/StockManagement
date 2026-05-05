@@ -1,4 +1,4 @@
-"""持仓数据管理 - SQLite 存储"""
+"""持仓数据管理 - SQLite 存储（支持用户隔离）"""
 import sqlite3
 import os
 from contextlib import contextmanager
@@ -34,141 +34,160 @@ def get_db():
 
 
 def init_db():
-    """初始化数据库表，如果为空则插入默认数据"""
+    """初始化数据库表（含用户隔离支持）"""
     with get_db() as conn:
+        # 新结构：含 user_id
         conn.execute("""
             CREATE TABLE IF NOT EXISTS holdings (
-                code TEXT PRIMARY KEY,
+                code TEXT NOT NULL,
                 name TEXT NOT NULL,
                 quantity INTEGER NOT NULL,
                 buy_price REAL NOT NULL,
-                current_price REAL NOT NULL
+                current_price REAL NOT NULL,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                PRIMARY KEY (code, user_id)
             )
         """)
         conn.commit()
 
-        count = conn.execute("SELECT COUNT(*) FROM holdings").fetchone()[0]
-        if count == 0:
-            defaults = [
-                ("苹果", "AAPL", 50, 178.50, 192.30),
-                ("特斯拉", "TSLA", 30, 245.00, 231.80),
-                ("英伟达", "NVDA", 20, 480.00, 520.50),
-                ("微软", "MSFT", 40, 380.00, 415.20),
-                ("谷歌", "GOOGL", 25, 140.00, 152.80),
-                ("亚马逊", "AMZN", 35, 185.00, 178.50),
-                ("腾讯", "0700.HK", 100, 320.00, 358.00),
-                ("茅台", "600519", 5, 1680.00, 1720.50),
-            ]
-            conn.executemany(
-                "INSERT INTO holdings (name, code, quantity, buy_price, current_price) VALUES (?, ?, ?, ?, ?)",
-                defaults,
-            )
+        # 迁移：旧表无 user_id 列时添加
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(holdings)").fetchall()]
+        if 'user_id' not in columns:
+            conn.execute("ALTER TABLE holdings ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
             conn.commit()
+            # 重建主键（需要新表）
+            conn.executescript("""
+                CREATE TABLE holdings_new (
+                    code TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    buy_price REAL NOT NULL,
+                    current_price REAL NOT NULL,
+                    user_id TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (code, user_id)
+                );
+                INSERT INTO holdings_new SELECT code, name, quantity, buy_price, current_price, 'default' FROM holdings;
+                DROP TABLE holdings;
+                ALTER TABLE holdings_new RENAME TO holdings;
+            """)
+
+        # 新用户不插入默认持仓数据
+        conn.commit()
 
 
-def get_all_holdings() -> list[dict]:
+def get_all_holdings(user_id: str = "default") -> list[dict]:
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM holdings").fetchall()
+        rows = conn.execute("SELECT code, name, quantity, buy_price, current_price FROM holdings WHERE user_id = ?", (user_id,)).fetchall()
         return [dict(r) for r in rows]
 
 
-def add_holding(item: HoldingItem) -> dict:
+def add_holding(item: HoldingItem, user_id: str = "default") -> dict:
     with get_db() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO holdings (code, name, quantity, buy_price, current_price) VALUES (?, ?, ?, ?, ?)",
-            (item.code, item.name, item.quantity, item.buy_price, item.current_price),
+            "INSERT OR REPLACE INTO holdings (code, name, quantity, buy_price, current_price, user_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (item.code, item.name, item.quantity, item.buy_price, item.current_price, user_id),
         )
         conn.commit()
     return item.model_dump()
 
 
-def update_holding(code: str, data: HoldingUpdate) -> dict | None:
+def update_holding(code: str, data: HoldingUpdate, user_id: str = "default") -> dict | None:
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
     if not updates:
         return None
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [code]
+    values = list(updates.values()) + [code, user_id]
     with get_db() as conn:
-        conn.execute(f"UPDATE holdings SET {set_clause} WHERE code = ?", values)
+        conn.execute(f"UPDATE holdings SET {set_clause} WHERE code = ? AND user_id = ?", values)
         conn.commit()
-        row = conn.execute("SELECT * FROM holdings WHERE code = ?", (code,)).fetchone()
+        row = conn.execute("SELECT code, name, quantity, buy_price, current_price FROM holdings WHERE code = ? AND user_id = ?", (code, user_id)).fetchone()
         return dict(row) if row else None
 
 
-def delete_holding(code: str) -> bool:
+def delete_holding(code: str, user_id: str = "default") -> bool:
     with get_db() as conn:
-        cursor = conn.execute("DELETE FROM holdings WHERE code = ?", (code,))
+        cursor = conn.execute("DELETE FROM holdings WHERE code = ? AND user_id = ?", (code, user_id))
         conn.commit()
         return cursor.rowcount > 0
 
 
-# ===== 现金管理（多币种） =====
+# ===== 现金管理（多币种，支持用户隔离） =====
 
 CASH_CURRENCIES = ("CNY", "HKD", "USD")
-CASH_DEFAULTS = {"CNY": 100000.0, "HKD": 0.0, "USD": 0.0}
+CASH_DEFAULTS = {"CNY": 0.0, "HKD": 0.0, "USD": 0.0}
 
 
 def _init_cash_table(conn: sqlite3.Connection):
-    # 检测是否存在旧表结构（id, amount），如有则迁移
+    # 检查旧表结构
     columns = [row[1] for row in conn.execute("PRAGMA table_info(cash)").fetchall()]
-    if columns and 'currency' not in columns:
-        # 旧表结构，保留人民币余额后删除重建
-        old_amount = 0.0
+
+    if columns and 'user_id' not in columns:
+        # 旧表无 user_id，迁移
+        old_data = []
         try:
-            row = conn.execute("SELECT amount FROM cash WHERE id = 1").fetchone()
-            if row:
-                old_amount = row[0]
+            rows = conn.execute("SELECT currency, amount FROM cash").fetchall()
+            old_data = [(r[0], r[1]) for r in rows]
         except Exception:
             pass
-        conn.execute("DROP TABLE cash")
+        conn.execute("DROP TABLE IF EXISTS cash")
         conn.commit()
         conn.execute("""
             CREATE TABLE cash (
-                currency TEXT PRIMARY KEY,
-                amount REAL NOT NULL DEFAULT 0
+                currency TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                PRIMARY KEY (currency, user_id)
             )
         """)
         conn.commit()
-        conn.execute("INSERT INTO cash (currency, amount) VALUES (?, ?)", ("CNY", old_amount))
-        conn.execute("INSERT INTO cash (currency, amount) VALUES (?, ?)", ("HKD", 0.0))
-        conn.execute("INSERT INTO cash (currency, amount) VALUES (?, ?)", ("USD", 0.0))
+        for cur, amt in old_data:
+            conn.execute("INSERT INTO cash (currency, amount, user_id) VALUES (?, ?, 'default')", (cur, amt))
         conn.commit()
         return
 
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS cash (
-            currency TEXT PRIMARY KEY,
-            amount REAL NOT NULL DEFAULT 0
-        )
-    """)
-    conn.commit()
+    if not columns:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cash (
+                currency TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                PRIMARY KEY (currency, user_id)
+            )
+        """)
+        conn.commit()
+
+
+def _ensure_cash_defaults(conn: sqlite3.Connection, user_id: str):
+    """确保用户有默认现金记录"""
     for cur in CASH_CURRENCIES:
-        row = conn.execute("SELECT 1 FROM cash WHERE currency = ?", (cur,)).fetchone()
+        row = conn.execute("SELECT 1 FROM cash WHERE currency = ? AND user_id = ?", (cur, user_id)).fetchone()
         if not row:
-            conn.execute("INSERT INTO cash (currency, amount) VALUES (?, ?)", (cur, CASH_DEFAULTS[cur]))
+            conn.execute("INSERT INTO cash (currency, amount, user_id) VALUES (?, ?, ?)", (cur, CASH_DEFAULTS[cur], user_id))
     conn.commit()
 
 
-def get_cash() -> dict[str, float]:
+def get_cash(user_id: str = "default") -> dict[str, float]:
     """返回 {CNY: ..., HKD: ..., USD: ...}"""
     with get_db() as conn:
         _init_cash_table(conn)
-        rows = conn.execute("SELECT currency, amount FROM cash").fetchall()
+        _ensure_cash_defaults(conn, user_id)
+        rows = conn.execute("SELECT currency, amount FROM cash WHERE user_id = ?", (user_id,)).fetchall()
         result = {cur: 0.0 for cur in CASH_CURRENCIES}
         for r in rows:
             result[r[0]] = r[1]
         return result
 
 
-def update_cash(currency: str, amount: float) -> dict[str, float]:
+def update_cash(currency: str, amount: float, user_id: str = "default") -> dict[str, float]:
     """更新指定币种的现金余额，返回全部余额"""
     if currency not in CASH_CURRENCIES:
         raise ValueError(f"不支持的币种: {currency}")
     with get_db() as conn:
         _init_cash_table(conn)
-        conn.execute("UPDATE cash SET amount = ? WHERE currency = ?", (amount, currency))
+        _ensure_cash_defaults(conn, user_id)
+        conn.execute("UPDATE cash SET amount = ? WHERE currency = ? AND user_id = ?", (amount, currency, user_id))
         conn.commit()
-        rows = conn.execute("SELECT currency, amount FROM cash").fetchall()
+        rows = conn.execute("SELECT currency, amount FROM cash WHERE user_id = ?", (user_id,)).fetchall()
         result = {cur: 0.0 for cur in CASH_CURRENCIES}
         for r in rows:
             result[r[0]] = r[1]
@@ -178,34 +197,40 @@ def update_cash(currency: str, amount: float) -> dict[str, float]:
 # ===== 资产快照 =====
 
 def _init_snapshot_table(conn: sqlite3.Connection):
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(asset_snapshots)").fetchall()]
+    if columns and 'user_id' not in columns:
+        conn.execute("ALTER TABLE asset_snapshots ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
+        conn.commit()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS asset_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date TEXT NOT NULL UNIQUE,
-            total_cny REAL NOT NULL
+            date TEXT NOT NULL,
+            total_cny REAL NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            UNIQUE(date, user_id)
         )
     """)
     conn.commit()
 
 
-def add_asset_snapshot(date: str, total_cny: float):
-    """记录某天的总资产快照（日期格式 YYYY-MM-DD），同一天覆盖"""
+def add_asset_snapshot(date: str, total_cny: float, user_id: str = "default"):
+    """记录某天的总资产快照"""
     with get_db() as conn:
         _init_snapshot_table(conn)
         conn.execute(
-            "INSERT OR REPLACE INTO asset_snapshots (date, total_cny) VALUES (?, ?)",
-            (date, total_cny),
+            "INSERT OR REPLACE INTO asset_snapshots (date, total_cny, user_id) VALUES (?, ?, ?)",
+            (date, total_cny, user_id),
         )
         conn.commit()
 
 
-def get_asset_snapshots(limit: int = 90) -> list[dict]:
-    """获取最近 N 天的资产快照，按日期升序"""
+def get_asset_snapshots(limit: int = 90, user_id: str = "default") -> list[dict]:
+    """获取最近 N 天的资产快照"""
     with get_db() as conn:
         _init_snapshot_table(conn)
         rows = conn.execute(
-            "SELECT date, total_cny FROM asset_snapshots ORDER BY date DESC LIMIT ?",
-            (limit,),
+            "SELECT date, total_cny FROM asset_snapshots WHERE user_id = ? ORDER BY date DESC LIMIT ?",
+            (user_id, limit),
         ).fetchall()
         return [{"date": r[0], "value": r[1]} for r in reversed(rows)]
 
@@ -218,45 +243,59 @@ class WatchItem(BaseModel):
 
 
 def _init_watchlist_table(conn: sqlite3.Connection):
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(watchlist)").fetchall()]
+    if columns and 'user_id' not in columns:
+        conn.execute("ALTER TABLE watchlist ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
+        conn.commit()
+        # 重建主键
+        conn.executescript("""
+            CREATE TABLE watchlist_new (
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                user_id TEXT NOT NULL DEFAULT 'default',
+                PRIMARY KEY (code, user_id)
+            );
+            INSERT OR IGNORE INTO watchlist_new SELECT code, name, 'default' FROM watchlist;
+            DROP TABLE watchlist;
+            ALTER TABLE watchlist_new RENAME TO watchlist;
+        """)
+        return
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS watchlist (
-            code TEXT PRIMARY KEY,
-            name TEXT NOT NULL
+            code TEXT NOT NULL,
+            name TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT 'default',
+            PRIMARY KEY (code, user_id)
         )
     """)
     conn.commit()
-    # 插入默认关注股票（仅首次）
-    count = conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0]
-    if count == 0:
-        defaults = [
-            ("AAPL", "苹果"), ("TSLA", "特斯拉"), ("NVDA", "英伟达"),
-            ("MSFT", "微软"), ("GOOGL", "谷歌"), ("AMZN", "亚马逊"),
-            ("META", "Meta"), ("TSM", "台积电"),
-            ("0700.HK", "腾讯"), ("600519", "茅台"),
-            ("002594", "比亚迪"), ("300750", "宁德时代"),
-        ]
-        conn.executemany("INSERT INTO watchlist (code, name) VALUES (?, ?)", defaults)
-        conn.commit()
 
 
-def get_watchlist() -> list[dict]:
+def _ensure_watchlist_defaults(conn: sqlite3.Connection, user_id: str):
+    # 新用户不插入默认关注列表
+    pass
+
+
+def get_watchlist(user_id: str = "default") -> list[dict]:
     with get_db() as conn:
         _init_watchlist_table(conn)
-        rows = conn.execute("SELECT code, name FROM watchlist").fetchall()
+        _ensure_watchlist_defaults(conn, user_id)
+        rows = conn.execute("SELECT code, name FROM watchlist WHERE user_id = ?", (user_id,)).fetchall()
         return [dict(r) for r in rows]
 
 
-def add_watch(item: WatchItem) -> dict:
+def add_watch(item: WatchItem, user_id: str = "default") -> dict:
     with get_db() as conn:
         _init_watchlist_table(conn)
-        conn.execute("INSERT OR REPLACE INTO watchlist (code, name) VALUES (?, ?)", (item.code, item.name))
+        conn.execute("INSERT OR REPLACE INTO watchlist (code, name, user_id) VALUES (?, ?, ?)", (item.code, item.name, user_id))
         conn.commit()
     return item.model_dump()
 
 
-def remove_watch(code: str) -> bool:
+def remove_watch(code: str, user_id: str = "default") -> bool:
     with get_db() as conn:
         _init_watchlist_table(conn)
-        cursor = conn.execute("DELETE FROM watchlist WHERE code = ?", (code,))
+        cursor = conn.execute("DELETE FROM watchlist WHERE code = ? AND user_id = ?", (code, user_id))
         conn.commit()
         return cursor.rowcount > 0

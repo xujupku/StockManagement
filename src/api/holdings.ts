@@ -1,4 +1,5 @@
 import type { StockHolding } from '../data/mockData';
+import { authFetch } from './authFetch';
 
 const BASE = '/api/holdings';
 
@@ -31,14 +32,14 @@ function toServer(h: Omit<StockHolding, 'currentPrice'> & { currentPrice?: numbe
 }
 
 export async function fetchHoldings(): Promise<StockHolding[]> {
-  const res = await fetch(BASE);
+  const res = await authFetch(BASE);
   if (!res.ok) throw new Error('获取持仓失败');
   const data: ServerHolding[] = await res.json();
   return data.map(toClient);
 }
 
 export async function createHolding(h: Omit<StockHolding, 'currentPrice'> & { currentPrice?: number }): Promise<StockHolding> {
-  const res = await fetch(BASE, {
+  const res = await authFetch(BASE, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toServer(h)),
@@ -54,7 +55,7 @@ export async function updateHoldingApi(code: string, data: Partial<StockHolding>
   if (data.buyPrice !== undefined) body.buy_price = data.buyPrice;
   if (data.currentPrice !== undefined) body.current_price = data.currentPrice;
 
-  const res = await fetch(`${BASE}/${encodeURIComponent(code)}`, {
+  const res = await authFetch(`${BASE}/${encodeURIComponent(code)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -64,6 +65,6 @@ export async function updateHoldingApi(code: string, data: Partial<StockHolding>
 }
 
 export async function deleteHoldingApi(code: string): Promise<void> {
-  const res = await fetch(`${BASE}/${encodeURIComponent(code)}`, { method: 'DELETE' });
+  const res = await authFetch(`${BASE}/${encodeURIComponent(code)}`, { method: 'DELETE' });
   if (!res.ok) throw new Error('删除持仓失败');
 }

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
+import { authFetch } from '../api/authFetch';
+import { getApiConfig } from '../api/config';
 
 // ===== 表单选项 =====
 
@@ -70,6 +72,111 @@ interface PickerForm {
   markets: string[];
 }
 
+interface Conversation {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+// ===== 任务状态（全局，不受组件卸载影响） =====
+
+interface PickerTask {
+  conversationId: string;
+  status: 'running' | 'completed' | 'failed';
+  progressText: string;
+  results: StockRecommendation[] | null;
+  error: string | null;
+}
+
+const globalTasks = new Map<string, PickerTask>();
+
+// 后台执行选股任务
+async function runPickerTask(
+  conversationId: string,
+  query: string,
+  onProgress?: (text: string) => void,
+) {
+  const task: PickerTask = {
+    conversationId,
+    status: 'running',
+    progressText: '',
+    results: null,
+    error: null,
+  };
+  globalTasks.set(conversationId, task);
+
+  try {
+    const response = await authFetch('/api/v1/run_stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, api_key: getApiConfig().apiKey || undefined, exa_key: getApiConfig().exaKey || undefined }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      throw new Error(`请求失败 (${response.status}): ${errText}`);
+    }
+
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error('无法获取响应流');
+
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let fullText = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() || '';
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6);
+        if (raw === '[DONE]') break;
+
+        let msg: { type: string; content: string };
+        try { msg = JSON.parse(raw); } catch { continue; }
+
+        if (msg.type === 'error') throw new Error(msg.content);
+
+        if (msg.type === 'delta') {
+          fullText += msg.content;
+          task.progressText = fullText;
+          onProgress?.(fullText);
+        } else if (msg.type === 'final') {
+          fullText = msg.content;
+          task.progressText = fullText;
+          onProgress?.(fullText);
+        }
+      }
+    }
+
+    if (!fullText) throw new Error('AI 未返回有效结果');
+
+    const recommendations = parseRecommendations(fullText);
+    task.results = recommendations;
+    task.status = 'completed';
+
+    // 保存助手回复到数据库
+    await authFetch(`/api/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'assistant', content: fullText }),
+    });
+
+    return recommendations;
+  } catch (e: any) {
+    task.status = 'failed';
+    task.error = e.message || '选股失败';
+    throw e;
+  }
+}
+
 const DEFAULT_FORM: PickerForm = {
   budget: '50000',
   horizon: 'medium',
@@ -94,98 +201,119 @@ function loadForm(): PickerForm {
   return DEFAULT_FORM;
 }
 
-// ===== Mock 推荐函数 =====
+// ===== 构建 AI 查询 =====
 
-function delay(ms: number) {
-  return new Promise(r => setTimeout(r, ms));
+function buildQuery(form: PickerForm): string {
+  const budgetLabel = BUDGET_OPTIONS.find(o => o.value === form.budget)?.label || form.budget;
+  const horizonLabel = HORIZON_OPTIONS.find(o => o.value === form.horizon)?.label || form.horizon;
+  const riskLabel = RISK_OPTIONS.find(o => o.value === form.risk)?.label || form.risk;
+  const industryLabels = form.industries.map(v => INDUSTRY_OPTIONS.find(o => o.value === v)?.label || v).join('、');
+  const marketLabels = form.markets.map(v => MARKET_OPTIONS.find(o => o.value === v)?.label || v).join('、');
+
+  const fence = '```';
+
+  return '请使用 stock-picker skill 为我进行股票筛选和推荐。\n\n' +
+    '投资条件：\n' +
+    `- 投资预算：${budgetLabel}\n` +
+    `- 投资期限：${horizonLabel}\n` +
+    `- 风险承受：${riskLabel}\n` +
+    `- 偏好行业：${industryLabels}\n` +
+    `- 目标市场：${marketLabels}\n\n` +
+    `请按照 stock-picker skill 的完整流程执行分析，并在最后输出以下 JSON 格式的推荐结果（必须包含在 ${fence}json 代码块中）。\n` +
+    `【重要】JSON 代码块必须是你整个回复的最后一段内容，代码块结束后不要再输出任何文字。\n\n` +
+    fence + 'json\n' +
+    '[\n' +
+    '  {\n' +
+    '    "code": "股票代码",\n' +
+    '    "name": "股票名称",\n' +
+    '    "market": "a/hk/us",\n' +
+    '    "industry": "所属行业",\n' +
+    '    "currentPrice": 当前价格数字,\n' +
+    '    "currency": "¥/$/HK$",\n' +
+    '    "targetPrice": 目标价格数字,\n' +
+    '    "upside": 预期涨幅百分比数字,\n' +
+    '    "rating": "strong_buy/buy/hold",\n' +
+    '    "riskLevel": "低/中低/中/中高/高",\n' +
+    '    "reasons": ["理由1", "理由2", "理由3"],\n' +
+    '    "highlights": "一句话核心亮点"\n' +
+    '  }\n' +
+    ']\n' +
+    fence;
 }
 
-async function mockRecommend(form: PickerForm): Promise<StockRecommendation[]> {
-  await delay(2000);
+// ===== 解析 AI 响应 =====
 
-  const pool: StockRecommendation[] = [
-    {
-      code: 'NVDA', name: '英伟达', market: 'us', industry: '半导体/AI', currentPrice: 135.6, currency: '$',
-      targetPrice: 165, upside: 21.7, rating: 'strong_buy', riskLevel: '中高',
-      reasons: ['AI算力需求持续爆发，数据中心GPU市占率超80%', 'H200/B100新品周期驱动收入加速增长', '毛利率维持70%+，盈利能力极强'],
-      highlights: 'AI基础设施核心标的，长期成长确定性高',
-    },
-    {
-      code: '600519', name: '贵州茅台', market: 'a', industry: '消费/白酒', currentPrice: 1520, currency: '¥',
-      targetPrice: 1750, upside: 15.1, rating: 'buy', riskLevel: '低',
-      reasons: ['品牌壁垒极高，提价能力强', '现金流充裕，分红率持续提升', '消费复苏背景下高端白酒需求回暖'],
-      highlights: '防御性极强的核心资产，适合长期配置',
-    },
-    {
-      code: 'AAPL', name: '苹果', market: 'us', industry: '科技/消费电子', currentPrice: 198.5, currency: '$',
-      targetPrice: 230, upside: 15.9, rating: 'buy', riskLevel: '低',
-      reasons: ['服务收入占比持续提升，毛利率改善', 'Apple Intelligence有望驱动换机潮', '生态粘性极强，用户基数超20亿'],
-      highlights: '全球市值最大公司，攻守兼备',
-    },
-    {
-      code: '09888', name: '百度集团-W', market: 'hk', industry: '科技/AI', currentPrice: 95.4, currency: 'HK$',
-      targetPrice: 130, upside: 36.3, rating: 'strong_buy', riskLevel: '中',
-      reasons: ['文心大模型商业化加速，日均调用量超10亿次', '自动驾驶萝卜快跑进入商业化拐点', '当前估值处于历史低位，安全边际高'],
-      highlights: '国内AI龙头，估值修复空间大',
-    },
-    {
-      code: '300750', name: '宁德时代', market: 'a', industry: '新能源/制造', currentPrice: 195, currency: '¥',
-      targetPrice: 245, upside: 25.6, rating: 'buy', riskLevel: '中',
-      reasons: ['全球动力电池市占率第一(37%)', '麒麟电池/神行电池技术领先', '海外产能扩张打开增量空间'],
-      highlights: '新能源赛道绝对龙头，技术护城河深',
-    },
-    {
-      code: 'MSFT', name: '微软', market: 'us', industry: '科技/云计算', currentPrice: 430, currency: '$',
-      targetPrice: 500, upside: 16.3, rating: 'buy', riskLevel: '低',
-      reasons: ['Azure云增速重新加速至30%+', 'Copilot AI产品矩阵全面铺开', '企业级市场壁垒极深，经常性收入占比高'],
-      highlights: 'AI+云计算双轮驱动，确定性极高',
-    },
-    {
-      code: '00700', name: '腾讯控股', market: 'hk', industry: '科技/互联网', currentPrice: 388, currency: 'HK$',
-      targetPrice: 470, upside: 21.1, rating: 'strong_buy', riskLevel: '中低',
-      reasons: ['游戏业务复苏+海外拓展加速', '视频号商业化释放广告增量', '回购力度加大，股东回报提升'],
-      highlights: '中国互联网龙头，商业模式优秀',
-    },
-    {
-      code: '002594', name: '比亚迪', market: 'a', industry: '新能源汽车', currentPrice: 285, currency: '¥',
-      targetPrice: 350, upside: 22.8, rating: 'buy', riskLevel: '中',
-      reasons: ['新能源汽车销量持续高增长', '智能驾驶"天神之眼"技术快速迭代', '出海战略加速，全球市场份额提升'],
-      highlights: '新能源汽车全产业链龙头',
-    },
-    {
-      code: 'AMZN', name: '亚马逊', market: 'us', industry: '科技/电商/云', currentPrice: 186, currency: '$',
-      targetPrice: 220, upside: 18.3, rating: 'buy', riskLevel: '低中',
-      reasons: ['AWS云服务增速回升，AI推理需求拉动', '零售业务利润率持续改善', '广告业务成为第三增长曲线'],
-      highlights: '全球电商+云计算双巨头',
-    },
-    {
-      code: '601899', name: '紫金矿业', market: 'a', industry: '能源/有色金属', currentPrice: 16.5, currency: '¥',
-      targetPrice: 20, upside: 21.2, rating: 'buy', riskLevel: '中高',
-      reasons: ['铜金价格处于上行周期', '全球矿产资源储量持续扩张', '成本控制优秀，盈利弹性大'],
-      highlights: '黄金+铜双主线，受益于通胀预期',
-    },
-  ];
-
-  // 根据表单筛选
-  let filtered = pool;
-
-  // 市场筛选
-  if (form.markets.length > 0) {
-    filtered = filtered.filter(s => form.markets.includes(s.market));
+function parseRecommendations(text: string): StockRecommendation[] {
+  // 尝试从所有 markdown 代码块中提取 JSON（取最后一个有效的）
+  const allJsonBlocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
+  for (let i = allJsonBlocks.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(allJsonBlocks[i][1].trim());
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].code) {
+        return parsed.map(normalizeStockItem);
+      }
+    } catch { /* 继续尝试其他代码块 */ }
   }
 
-  // 风险筛选：低风险用户不推高风险股
-  if (form.risk === 'low') {
-    filtered = filtered.filter(s => s.riskLevel === '低' || s.riskLevel === '低中');
+  // 尝试匹配最长的顶层 JSON 数组（贪婪，从 [ 到最后一个 ]）
+  const arrayMatches = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
+  if (arrayMatches) {
+    try {
+      const parsed = JSON.parse(arrayMatches[0]);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].code) {
+        return parsed.map(normalizeStockItem);
+      }
+    } catch { /* ignore */ }
   }
 
-  // 投资期限影响推荐排序
-  if (form.horizon === 'ultra_short' || form.horizon === 'short') {
-    filtered.sort((a, b) => b.upside - a.upside);
+  // 最后尝试：逐行扫描找到 JSON 数组的起止位置
+  const lines = text.split('\n');
+  let startIdx = -1;
+  let bracketCount = 0;
+  let jsonStr = '';
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (startIdx === -1 && line.trim().startsWith('[')) {
+      startIdx = i;
+    }
+    if (startIdx !== -1) {
+      jsonStr += line + '\n';
+      for (const ch of line) {
+        if (ch === '[') bracketCount++;
+        else if (ch === ']') bracketCount--;
+      }
+      if (bracketCount === 0) {
+        try {
+          const parsed = JSON.parse(jsonStr.trim());
+          if (Array.isArray(parsed) && parsed.length > 0 && parsed[0].code) {
+            return parsed.map(normalizeStockItem);
+          }
+        } catch { /* 重置继续 */ }
+        startIdx = -1;
+        bracketCount = 0;
+        jsonStr = '';
+      }
+    }
   }
 
-  // 取前5只
-  return filtered.slice(0, 5);
+  throw new Error('无法从 AI 响应中解析推荐结果');
+}
+
+function normalizeStockItem(item: any): StockRecommendation {
+  return {
+    code: String(item.code || ''),
+    name: String(item.name || ''),
+    market: String(item.market || 'a'),
+    industry: String(item.industry || ''),
+    currentPrice: Number(item.currentPrice) || 0,
+    currency: String(item.currency || '¥'),
+    targetPrice: Number(item.targetPrice) || 0,
+    upside: Number(item.upside) || 0,
+    rating: (['strong_buy', 'buy', 'hold'].includes(item.rating) ? item.rating : 'hold') as StockRecommendation['rating'],
+    riskLevel: String(item.riskLevel || '中'),
+    reasons: Array.isArray(item.reasons) ? item.reasons.map(String) : [],
+    highlights: String(item.highlights || ''),
+  };
 }
 
 // ===== 组件 =====
@@ -228,9 +356,61 @@ function ChipSelect({ options, value, onChange, multi = false }: {
 
 export default function AIStockPicker() {
   const [form, setForm] = useState<PickerForm>(loadForm);
-  const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [currentConv, setCurrentConv] = useState<Conversation | null>(null);
   const [results, setResults] = useState<StockRecommendation[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progressText, setProgressText] = useState('');
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const progressRef = useRef<HTMLDivElement>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 加载会话列表（只加载 picker 类型）
+  const loadConversations = useCallback(async () => {
+    try {
+      const res = await authFetch('/api/conversations?type=picker');
+      const data = await res.json();
+      setConversations(data);
+      return data;
+    } catch (e) {
+      console.error('加载会话列表失败', e);
+      return [];
+    }
+  }, []);
+
+  useEffect(() => {
+    loadConversations().then((data: Conversation[]) => {
+      if (data.length > 0) {
+        loadConversationResult(data[0]);
+      }
+    });
+  }, []);
+
+  // 轮询检查当前任务的进度
+  useEffect(() => {
+    if (!currentConv) return;
+    const task = globalTasks.get(currentConv.id);
+    if (!task || task.status !== 'running') return;
+
+    pollRef.current = setInterval(() => {
+      const t = globalTasks.get(currentConv.id);
+      if (t && t.status === 'running') {
+        setProgressText(t.progressText);
+        if (t.results) setResults(t.results);
+        if (t.error) setError(t.error);
+      }
+      if (t && t.status !== 'running') {
+        if (pollRef.current) clearInterval(pollRef.current);
+        loadConversations();
+      }
+    }, 500);
+
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [currentConv, loadConversations]);
+
+  // 页面卸载时任务继续在后台运行（globalTasks 不受组件生命周期影响）
 
   const updateForm = <K extends keyof PickerForm>(key: K, val: PickerForm[K]) => {
     setForm(prev => {
@@ -240,25 +420,207 @@ export default function AIStockPicker() {
     });
   };
 
+  // 创建新选股任务
   const handleSubmit = async () => {
     if (form.markets.length === 0) { setError('请至少选择一个市场'); return; }
-    setLoading(true);
     setError(null);
+    setResults(null);
+    setProgressText('');
+
     try {
-      const res = await mockRecommend(form);
-      setResults(res);
+      // 创建会话（标记为 picker 类型）
+      const res = await authFetch('/api/conversations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: 'AI选股', type: 'picker' }),
+      });
+      const conv: Conversation = await res.json();
+      setCurrentConv(conv);
+
+      // 更新标题
+      const title = `${BUDGET_OPTIONS.find(o => o.value === form.budget)?.label || ''} · ${HORIZON_OPTIONS.find(o => o.value === form.horizon)?.label || ''}`;
+      await authFetch(`/api/conversations/${conv.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.slice(0, 20) }),
+      });
+
+      // 保存用户消息
+      const query = buildQuery(form);
+      await authFetch(`/api/conversations/${conv.id}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'user', content: query }),
+      });
+
+      loadConversations();
+
+      // 后台执行任务
+      runPickerTask(conv.id, query, (text) => {
+        setProgressText(text);
+        setTimeout(() => {
+          progressRef.current?.scrollTo({ top: progressRef.current.scrollHeight });
+        }, 0);
+      }).then((recs) => {
+        setResults(recs);
+        loadConversations();
+      }).catch((e) => {
+        setError(e.message || '选股失败');
+      });
     } catch (e: any) {
-      setError(e.message || '推荐请求失败');
-    } finally {
-      setLoading(false);
+      setError(e.message || '创建任务失败');
     }
   };
 
-  return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
+  // 加载历史会话结果
+  const loadConversationResult = async (conv: Conversation) => {
+    setCurrentConv(conv);
+    setResults(null);
+    setProgressText('');
+    setError(null);
+    setHistoryLoading(true);
 
-      {/* 表单区域 */}
+    // 检查是否有正在运行的任务
+    const task = globalTasks.get(conv.id);
+    if (task && task.status === 'running') {
+      setProgressText(task.progressText);
+      setHistoryLoading(false);
+      return;
+    }
+
+    // 从数据库加载消息
+    try {
+      const res = await authFetch(`/api/conversations/${conv.id}/messages`);
+      const messages = await res.json();
+      const assistantMsg = messages.filter((m: any) => m.role === 'assistant').pop();
+      if (assistantMsg?.content) {
+        const recs = parseRecommendations(assistantMsg.content);
+        setResults(recs);
+        setProgressText(assistantMsg.content);
+      }
+    } catch (e) {
+      console.error('加载历史结果失败', e);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  // 删除会话
+  const deleteConversation = async (convId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await authFetch(`/api/conversations/${convId}`, { method: 'DELETE' });
+      globalTasks.delete(convId);
+      if (currentConv?.id === convId) {
+        setCurrentConv(null);
+        setResults(null);
+        setProgressText('');
+      }
+      loadConversations();
+    } catch (err) {
+      console.error('删除失败', err);
+    }
+  };
+
+  // 新建选股
+  const handleNew = () => {
+    setCurrentConv(null);
+    setResults(null);
+    setProgressText('');
+    setError(null);
+  };
+
+  // 从流式文本中提取当前阶段
+  const currentStage = (() => {
+    if (!progressText) return '';
+    if (progressText.includes('阶段 6') || progressText.includes('最终推荐')) return '阶段 6/6：生成最终推荐';
+    if (progressText.includes('阶段 5') || progressText.includes('投资组合构建')) return '阶段 5/6：构建投资组合';
+    if (progressText.includes('阶段 4') || progressText.includes('深度分析')) return '阶段 4/6：深度分析与评分';
+    if (progressText.includes('阶段 3') || progressText.includes('股票池')) return '阶段 3/6：构建股票池';
+    if (progressText.includes('阶段 2') || progressText.includes('市场新闻') || progressText.includes('行业分析')) return '阶段 2/6：市场与行业分析';
+    if (progressText.includes('阶段 1') || progressText.includes('偏好')) return '阶段 1/6：提取投资偏好';
+    return '正在初始化分析...';
+  })();
+
+  const isLoading = currentConv ? (globalTasks.get(currentConv.id)?.status === 'running') : false;
+
+  return (
+    <div className="h-[calc(100vh-4rem)] flex">
+      {/* 左侧：历史记录 */}
+      <div className="w-56 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-gray-50 dark:bg-gray-800/50 rounded-l-2xl">
+        <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
+          <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">选股历史</span>
+          <button
+            onClick={handleNew}
+            className="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition"
+          >
+            + 新选股
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {conversations.length === 0 ? (
+            <div className="p-6 text-center text-gray-400 text-xs">暂无选股记录</div>
+          ) : (
+            conversations.map(conv => {
+              const task = globalTasks.get(conv.id);
+              const isRunning = task?.status === 'running';
+              return (
+                <div
+                  key={conv.id}
+                  onClick={() => loadConversationResult(conv)}
+                  className={`group px-3 py-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 flex items-center justify-between transition ${
+                    currentConv?.id === conv.id ? 'bg-indigo-50 dark:bg-indigo-900/20 border-r-2 border-indigo-500' : ''
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-gray-700 dark:text-gray-200 truncate">{conv.title}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="text-[11px] text-gray-400">{new Date(conv.updated_at).toLocaleDateString()}</span>
+                      {isRunning && (
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    onClick={(e) => deleteConversation(conv.id, e)}
+                    className="opacity-0 group-hover:opacity-100 ml-2 p-1 text-gray-400 hover:text-red-500 rounded transition"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+
+      {/* 右侧：主区域 */}
+      <div className="flex-1 flex flex-col max-w-4xl overflow-y-auto">
+        <div className="p-6 space-y-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
+            {currentConv && !isLoading && (
+              <button
+                onClick={handleNew}
+                className="text-xs px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition"
+              >
+                + 新选股
+              </button>
+            )}
+          </div>
+
+      {/* 历史加载中 */}
+      {historyLoading && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-8 shadow-sm border border-gray-100 dark:border-gray-800 text-center">
+          <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm text-gray-500">正在加载选股结果...</p>
+        </div>
+      )}
+
+      {/* 表单区域：只有在新选股时才显示 */}
+      {!currentConv && !results && !historyLoading && (<>
       <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800 space-y-5">
         <p className="text-xs text-gray-400">填写你的投资条件，AI 将为你筛选最匹配的股票</p>
 
@@ -322,23 +684,46 @@ export default function AIStockPicker() {
       {/* 提交按钮 */}
       <button
         onClick={handleSubmit}
-        disabled={loading}
-        className={`w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm ${
-          loading
-            ? 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
-            : 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 hover:shadow-md'
-        }`}
+        disabled={isLoading}
+        className="w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed"
       >
-        {loading ? (
-          <span className="flex items-center justify-center gap-2">
-            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-            </svg>
-            AI 正在分析筛选...
-          </span>
-        ) : results ? '重新选股' : '开始 AI 智能选股'}
+        开始 AI 智能选股
       </button>
+      </>)}
+
+      {/* 分析进度面板 */}
+      {isLoading && (
+        <div className="bg-white dark:bg-gray-900 rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden">
+          {/* 阶段指示器 */}
+          <div className="px-4 py-3 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 border-b border-gray-100 dark:border-gray-800">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+              <span className="text-sm font-semibold text-indigo-600 dark:text-indigo-400">{currentStage}</span>
+            </div>
+            {/* 进度条 */}
+            <div className="mt-2 h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500"
+                style={{
+                  width: currentStage.includes('阶段 6') ? '95%' :
+                         currentStage.includes('阶段 5') ? '80%' :
+                         currentStage.includes('阶段 4') ? '65%' :
+                         currentStage.includes('阶段 3') ? '45%' :
+                         currentStage.includes('阶段 2') ? '25%' :
+                         currentStage.includes('阶段 1') ? '10%' : '2%'
+                }}
+              />
+            </div>
+          </div>
+          {/* 流式文本 */}
+          <div
+            ref={progressRef}
+            className="max-h-64 overflow-y-auto p-4 text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap font-mono leading-relaxed"
+          >
+            {progressText || '正在启动分析...'}
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-500/20 rounded-2xl p-4 text-red-600 dark:text-red-400 text-sm">
@@ -419,6 +804,8 @@ export default function AIStockPicker() {
           暂无符合条件的推荐，请尝试调整筛选条件
         </div>
       )}
+        </div>
+      </div>
     </div>
   );
 }

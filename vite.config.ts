@@ -7,18 +7,12 @@ export default defineConfig({
   server: {
     proxy: {
       '/v1': {
-        target: 'http://39.96.197.206:8000',
+        target: 'http://localhost:8000',
         changeOrigin: true,
-        headers: {
-          Origin: 'http://39.96.197.206:8000',
-        },
       },
       '/api': {
-        target: 'http://39.96.197.206:8000',
+        target: 'http://localhost:8000',
         changeOrigin: true,
-        headers: {
-          Origin: 'http://39.96.197.206:8000',
-        },
       },
     },
   },
