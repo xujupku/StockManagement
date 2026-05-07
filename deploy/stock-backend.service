@@ -1,0 +1,15 @@
+[Unit]
+Description=StockProject Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/StockProject/server
+Environment="PATH=/opt/StockProject/server/venv/bin"
+ExecStart=/opt/StockProject/server/venv/bin/python main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

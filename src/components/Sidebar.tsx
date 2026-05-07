@@ -37,7 +37,7 @@ function getStoredNavItems() {
   return defaultNavItems;
 }
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const { dark } = useTheme();
   const { user, logout } = useAuth();
   const [navItems, setNavItems] = useState(getStoredNavItems);
@@ -92,12 +92,25 @@ export default function Sidebar() {
   }, []);
 
   return (
-    <aside className="w-64 shrink-0 h-screen sticky top-0 bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col">
-      <div className="px-6 py-6 border-b border-gray-200 dark:border-gray-800">
+    <aside className={`
+      w-64 shrink-0 h-screen bg-white dark:bg-gray-900 border-r border-gray-200 dark:border-gray-800 flex flex-col
+      fixed md:sticky top-0 z-50 transition-transform duration-300
+      ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+    `}>
+      <div className="px-6 py-6 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
         <h1 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
           <span className="text-2xl">🤖</span>
           <span>AI股票投资管家</span>
         </h1>
+        {/* 移动端关闭按钮 */}
+        <button
+          onClick={onClose}
+          className="md:hidden p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">

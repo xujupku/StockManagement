@@ -22,7 +22,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' http://39.96.197.206:8000 http://localhost:8000 https://*; img-src 'self' data: https://*; style-src 'self' 'unsafe-inline';"
     }
   },
   "bundle": {
@@ -34,6 +34,12 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

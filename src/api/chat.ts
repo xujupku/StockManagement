@@ -8,8 +8,15 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ToolEvent {
+  type: 'tool_start' | 'tool_complete';
+  name: string;
+  args?: Record<string, string>;
+}
+
 export interface StreamOptions {
   onFinal?: (text: string) => void;
+  onToolEvent?: (event: ToolEvent) => void;
   signal?: AbortSignal;
 }
 
@@ -21,7 +28,7 @@ export async function chatWithAIStream(
   onChunk: (text: string) => void,
   options?: StreamOptions,
 ): Promise<void> {
-  const { onFinal, signal } = options || {};
+  const { onFinal, onToolEvent, signal } = options || {};
 
   // 最后一条 user 消息作为 query，其余作为 history
   const query = messages[messages.length - 1]?.content || '';
@@ -67,7 +74,7 @@ export async function chatWithAIStream(
       const raw = line.slice(6);
       if (raw === '[DONE]') return;
 
-      let msg: { type: string; content: string };
+      let msg: { type: string; content: any };
       try {
         msg = JSON.parse(raw);
       } catch {
@@ -78,7 +85,11 @@ export async function chatWithAIStream(
         throw new Error(msg.content);
       }
 
-      if (msg.type === 'delta') {
+      if (msg.type === 'tool_start' || msg.type === 'tool_complete') {
+        if (onToolEvent) {
+          onToolEvent({ type: msg.type, name: msg.content.name, args: msg.content.args });
+        }
+      } else if (msg.type === 'delta') {
         onChunk(msg.content);
       } else if (msg.type === 'final' && onFinal) {
         onFinal(msg.content);

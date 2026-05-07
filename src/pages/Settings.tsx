@@ -79,10 +79,10 @@ export default function Settings() {
       <h2 className="text-2xl font-bold text-gray-900 dark:text-white">设置</h2>
 
       {/* 用户信息 */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800">
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">用户信息</h3>
         <div className="flex items-center gap-4">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-2xl font-bold">
+          <div className="w-12 h-12 md:w-16 md:h-16 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white text-xl md:text-2xl font-bold">
             {user?.nickname?.[0]?.toUpperCase() || 'U'}
           </div>
           <div>
@@ -96,7 +96,7 @@ export default function Settings() {
       </div>
 
       {/* 主题切换 */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800">
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">外观</h3>
         <div className="flex items-center justify-between">
           <div>
@@ -113,7 +113,7 @@ export default function Settings() {
       </div>
 
       {/* API Key 配置 */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800">
         <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-4">AI 模型配置</h3>
         <div className="space-y-4">
           <div>
@@ -152,7 +152,7 @@ export default function Settings() {
       </div>
 
       {/* 操作日志 */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">操作日志</h3>
           <button

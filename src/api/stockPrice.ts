@@ -1,3 +1,5 @@
+import { authFetch } from './authFetch';
+
 const BASE = '/api/prices';
 
 /**
@@ -7,7 +9,7 @@ const BASE = '/api/prices';
 export async function fetchPrices(codes: string[]): Promise<Record<string, number>> {
   if (codes.length === 0) return {};
 
-  const res = await fetch(`${BASE}?codes=${encodeURIComponent(codes.join(','))}`);
+  const res = await authFetch(`${BASE}?codes=${encodeURIComponent(codes.join(','))}`);
   if (!res.ok) throw new Error('获取行情失败');
   return res.json();
 }

@@ -71,3 +71,14 @@ export default defineConfig([
   },
 ])
 ```
+
+
+# 编译桌面app
+source "$HOME/.cargo/env" && npx tauri build
+npx tauri ios build --target aarch64-sim
+npx tauri ios build --target aarch64
+npx tauri build
+
+
+# 同步文件到服务器
+rsync -avz src root@39.96.197.206:/opt/StockProject/

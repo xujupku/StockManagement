@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from 'react';
+import { authFetch } from '../api/authFetch';
 
 interface User {
   id: string;
@@ -46,9 +47,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false);
       return;
     }
-    fetch('/api/auth/me', {
-      headers: { 'Authorization': `Bearer ${token}` },
-    })
+    authFetch('/api/auth/me')
       .then(res => {
         if (!res.ok) throw new Error('invalid');
         return res.json();
@@ -68,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const login = async (email: string, password: string) => {
-    const res = await fetch('/api/auth/login', {
+    const res = await authFetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
@@ -85,7 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const register = async (email: string, password: string) => {
-    const res = await fetch('/api/auth/register', {
+    const res = await authFetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),

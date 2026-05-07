@@ -362,6 +362,7 @@ export default function AIStockPicker() {
   const [error, setError] = useState<string | null>(null);
   const [progressText, setProgressText] = useState('');
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const progressRef = useRef<HTMLDivElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -547,15 +548,25 @@ export default function AIStockPicker() {
   return (
     <div className="h-[calc(100vh-4rem)] flex">
       {/* 左侧：历史记录 */}
-      <div className="w-56 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-gray-50 dark:bg-gray-800/50 rounded-l-2xl">
+      <div className={`fixed md:relative inset-y-0 left-0 z-30 md:z-auto transition-transform duration-300 w-56 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-gray-50 dark:bg-gray-800/50 rounded-l-2xl ${showHistory ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">选股历史</span>
-          <button
-            onClick={handleNew}
-            className="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition"
-          >
-            + 新选股
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={handleNew}
+              className="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition"
+            >
+              + 新选股
+            </button>
+            <button
+              onClick={() => setShowHistory(false)}
+              className="md:hidden p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.length === 0 ? (
@@ -597,10 +608,20 @@ export default function AIStockPicker() {
       </div>
 
       {/* 右侧：主区域 */}
-      <div className="flex-1 flex flex-col max-w-4xl overflow-y-auto">
-        <div className="p-6 space-y-6">
+      <div className="flex-1 flex flex-col overflow-y-auto">
+        <div className="p-4 md:p-6 space-y-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowHistory(true)}
+                className="md:hidden p-2 -ml-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
+            </div>
             {currentConv && !isLoading && (
               <button
                 onClick={handleNew}
@@ -621,7 +642,7 @@ export default function AIStockPicker() {
 
       {/* 表单区域：只有在新选股时才显示 */}
       {!currentConv && !results && !historyLoading && (<>
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 shadow-sm border border-gray-100 dark:border-gray-800 space-y-5">
+      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800 space-y-5">
         <p className="text-xs text-gray-400">填写你的投资条件，AI 将为你筛选最匹配的股票</p>
 
         {/* 投资金额 */}
@@ -762,7 +783,7 @@ export default function AIStockPicker() {
                 </div>
 
                 {/* 价格信息 */}
-                <div className="flex items-center gap-6 mb-3 py-2.5 px-3 rounded-xl bg-gray-50 dark:bg-gray-800/50">
+                <div className="flex flex-wrap items-center gap-3 md:gap-6 mb-3 py-2.5 px-3 rounded-xl bg-gray-50 dark:bg-gray-800/50">
                   <div>
                     <p className="text-xs text-gray-400">当前价</p>
                     <p className="text-sm font-semibold text-gray-900 dark:text-white">{stock.currency}{stock.currentPrice}</p>

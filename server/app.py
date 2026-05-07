@@ -167,7 +167,7 @@ async def lifespan(app_instance):
 app = FastAPI(title="AI股票投资管家 - 分析服务", version="1.0.0", lifespan=lifespan)
 
 # CORS
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,https://tauri.localhost,tauri://localhost").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -303,13 +303,21 @@ async def run_hermes_stream(request: QueryRequest):
             if delta:
                 q.put(("delta", delta))
 
+        def _tool_start_cb(tool_call_id: str, name: str, args: dict):
+            q.put(("tool_start", {"name": name, "args": {k: str(v)[:100] for k, v in (args or {}).items() if k != "content"}}))
+
+        def _tool_complete_cb(tool_call_id: str, name: str, args: dict, result: str):
+            q.put(("tool_complete", {"name": name, "duration": None}))
+
         def _run_agent():
             if request.exa_key:
                 os.environ["EXA_API_KEY"] = request.exa_key
             agent_kwargs = dict(
                 base_url=request.base_url,
                 model=request.model,
-                quiet_mode=True
+                quiet_mode=True,
+                tool_start_callback=_tool_start_cb,
+                tool_complete_callback=_tool_complete_cb,
             )
             if request.api_key:
                 agent_kwargs['api_key'] = request.api_key
@@ -347,6 +355,8 @@ async def run_hermes_stream(request: QueryRequest):
             elif msg_type == "error":
                 yield f"data: {_json.dumps({'type': 'error', 'content': payload}, ensure_ascii=False)}\n\n"
                 break
+            elif msg_type in ("tool_start", "tool_complete"):
+                yield f"data: {_json.dumps({'type': msg_type, 'content': payload}, ensure_ascii=False)}\n\n"
             else:
                 yield f"data: {_json.dumps({'type': 'delta', 'content': payload}, ensure_ascii=False)}\n\n"
 

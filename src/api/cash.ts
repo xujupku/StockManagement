@@ -25,7 +25,7 @@ export async function updateCashApi(currency: string, amount: number): Promise<C
 }
 
 export async function fetchRates(): Promise<Record<string, number>> {
-  const res = await fetch('/api/rates');
+  const res = await authFetch('/api/rates');
   if (!res.ok) throw new Error('获取汇率失败');
   return res.json();
 }

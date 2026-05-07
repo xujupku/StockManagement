@@ -200,6 +200,7 @@ export default function AIAdvisor() {
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showPrefs, setShowPrefs] = useState(false);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const [progressText, setProgressText] = useState('');
   const abortRef = useRef<AbortController | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
@@ -379,20 +380,31 @@ export default function AIAdvisor() {
   return (
     <div className="flex h-full">
       {/* 左侧：历史列表 */}
-      <div className="w-64 shrink-0 border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col">
+      <div className={`w-64 shrink-0 fixed md:relative inset-y-0 left-0 z-30 md:z-auto transition-transform duration-300 h-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col ${showHistory ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
         <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
           <span className="font-semibold text-gray-900 dark:text-white text-sm">分析历史</span>
-          <button
-            onClick={async () => {
-              setCurrentConvId(null);
-              setResult(null);
-              setProgressText('');
-              setError(null);
-            }}
-            className="text-xs px-2 py-1 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition"
-          >
-            + 新分析
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={async () => {
+                setCurrentConvId(null);
+                setResult(null);
+                setProgressText('');
+                setError(null);
+                setShowHistory(false);
+              }}
+              className="text-xs px-2 py-1 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition"
+            >
+              + 新分析
+            </button>
+            <button
+              onClick={() => setShowHistory(false)}
+              className="md:hidden p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           {conversations.length === 0 ? (
@@ -410,6 +422,7 @@ export default function AIAdvisor() {
                   onClick={() => {
                     setCurrentConvId(conv.id);
                     loadConversationMessages(conv.id);
+                    setShowHistory(false);
                   }}
                 >
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate pr-6">
@@ -438,11 +451,22 @@ export default function AIAdvisor() {
       </div>
 
       {/* 右侧：主内容 */}
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-4 md:p-6">
         <div className="max-w-4xl mx-auto space-y-6">
           {/* 标题栏 */}
           <div className="flex items-center justify-between">
-            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 持仓分析</h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowHistory(true)}
+                className="md:hidden p-2 -ml-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                title="打开历史记录"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
+                </svg>
+              </button>
+              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 持仓分析</h2>
+            </div>
             <button
               onClick={() => setShowPrefs(s => !s)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
@@ -657,7 +681,7 @@ export default function AIAdvisor() {
                       const urgStyle = URGENCY_LABELS[action.urgency] ?? URGENCY_LABELS.low;
                       return (
                         <div key={i} className="bg-white dark:bg-gray-900 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-800">
-                          <div className="flex items-start gap-4">
+                          <div className="flex flex-col sm:flex-row items-start gap-4">
                             <div className={`shrink-0 w-12 h-12 rounded-xl flex items-center justify-center text-sm font-bold ${actionStyle.color}`}>
                               {actionStyle.text}
                             </div>
