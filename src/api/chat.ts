@@ -3,11 +3,6 @@ import { getApiConfig } from './config';
 
 const API_URL = '/api/v1/run_stream';
 
-export interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
 export interface ToolEvent {
   type: 'tool_start' | 'tool_complete';
   name: string;
@@ -20,26 +15,20 @@ export interface StreamOptions {
   signal?: AbortSignal;
 }
 
-/**
- * 流式对话
- */
 export async function chatWithAIStream(
-  messages: ChatMessage[],
+  query: string,
+  convId: string | null,
   onChunk: (text: string) => void,
   options?: StreamOptions,
 ): Promise<void> {
   const { onFinal, onToolEvent, signal } = options || {};
-
-  // 最后一条 user 消息作为 query，其余作为 history
-  const query = messages[messages.length - 1]?.content || '';
-  const history = messages.slice(0, -1);
 
   const response = await authFetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       query,
-      messages: history,
+      conv_id: convId,
       api_key: getApiConfig().apiKey || undefined,
       exa_key: getApiConfig().exaKey || undefined,
     }),
@@ -63,7 +52,6 @@ export async function chatWithAIStream(
 
     buffer += decoder.decode(value, { stream: true });
 
-    // 按 SSE 格式解析：每条消息以 \n\n 分隔
     const parts = buffer.split('\n\n');
     buffer = parts.pop() || '';
 

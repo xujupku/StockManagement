@@ -1,6 +1,7 @@
 import sqlite3
 import os
 import uuid
+import json
 from datetime import datetime
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "chat.db")
@@ -45,6 +46,13 @@ def init_chat_db():
     # 迁移：给旧表添加 user_id 字段
     try:
         conn.execute("ALTER TABLE conversations ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+
+    # 迁移：给旧表添加 hermes_messages 字段
+    try:
+        conn.execute("ALTER TABLE conversations ADD COLUMN hermes_messages TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass
@@ -134,6 +142,30 @@ def get_messages(conv_id: str) -> list:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def get_hermes_messages(conv_id: str) -> list | None:
+    conn = _get_conn()
+    row = conn.execute("SELECT hermes_messages FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+    conn.close()
+    if not row or not row["hermes_messages"]:
+        return None
+    try:
+        return json.loads(row["hermes_messages"])
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def save_hermes_messages(conv_id: str, messages: list) -> bool:
+    conn = _get_conn()
+    now = datetime.now().isoformat()
+    cur = conn.execute(
+        "UPDATE conversations SET hermes_messages = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(messages, ensure_ascii=False), now, conv_id),
+    )
+    conn.commit()
+    conn.close()
+    return cur.rowcount > 0
 
 
 # 初始化

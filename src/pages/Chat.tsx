@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { chatWithAIStream, type ChatMessage, type ToolEvent } from '../api/chat';
+import { chatWithAIStream, type ToolEvent } from '../api/chat';
 import { authFetch } from '../api/authFetch';
 
 interface DisplayMessage {
@@ -88,7 +88,7 @@ export default function Chat() {
 
   // 加载会话消息
   const loadMessages = useCallback(async (convId: string) => {
-    isInitialLoad.current = true;  // 切换会话时立即跳到底部
+    isInitialLoad.current = true;
     try {
       const res = await authFetch(`/api/conversations/${convId}/messages`);
       const data = await res.json();
@@ -216,14 +216,10 @@ export default function Chat() {
     abortRef.current = abortController;
 
     try {
-      const apiMessages: ChatMessage[] = [
-        { role: 'system', content: '你是一个专业的股票投资顾问。请根据用户的问题，提供专业、客观的股票分析和投资建议。回答应简洁明了，包含关键数据和逻辑依据。' },
-        ...prevMessages.map(m => ({ role: m.role, content: m.content } as ChatMessage)),
-      ];
-
       let fullResponse = '';
       await chatWithAIStream(
-        apiMessages,
+        text,
+        convId,
         (chunk) => {
           fullResponse += chunk;
           setMessages(prev => {
@@ -396,7 +392,7 @@ export default function Chat() {
                   : 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-md'
               }`}>
                 {msg.role === 'assistant' && msg.content ? (
-                  <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2 prose-code:text-xs prose-code:bg-gray-200 prose-code:dark:bg-gray-700 prose-code:px-1 prose-code:py-0.5 prose-code:rounded">
+                  <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{

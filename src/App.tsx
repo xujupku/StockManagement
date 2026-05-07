@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ThemeProvider } from './context/ThemeContext';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { StockProvider } from './context/StockContext';
+import { AIAdvisorProvider } from './context/AIAdvisorContext';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
 import Portfolio from './pages/Portfolio';
@@ -29,6 +30,7 @@ function AppContent() {
 
   return (
     <StockProvider>
+      <AIAdvisorProvider>
       <BrowserRouter>
         <Routes>
           <Route element={<Layout />}>
@@ -42,6 +44,7 @@ function AppContent() {
           </Route>
         </Routes>
       </BrowserRouter>
+      </AIAdvisorProvider>
     </StockProvider>
   );
 }

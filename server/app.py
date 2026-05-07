@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 from datetime import datetime
 from contextlib import asynccontextmanager
 
@@ -24,6 +25,7 @@ from chat_db import (
     create_conversation, list_conversations, get_conversation,
     delete_conversation, update_conversation_title,
     add_message, get_messages,
+    get_hermes_messages, save_hermes_messages,
 )
 from auth_db import (
     register_user, verify_user, get_user_by_id,
@@ -34,9 +36,11 @@ from activity_log_db import insert_logs, query_logs, get_log_stats
 from fastapi.responses import StreamingResponse
 import sys
 sys.path.append(os.path.expanduser('~/.hermes/hermes-agent/'))
-from run_agent import AIAgent  # 引入 Hermes Agent 核心类
+from run_agent import AIAgent
 
 load_dotenv()
+
+_hermes_lock = threading.Lock()
 
 
 SINA_API = "https://hq.sinajs.cn"
@@ -183,6 +187,57 @@ init_db()
 agent = HermesAgent()
 
 
+def run_agent_for_user(
+    user_id: str,
+    query: str,
+    conversation_history=None,
+    stream_callback=None,
+    base_url: str = "https://api.deepseek.com",
+    model: str = "deepseek-v4-flash",
+    api_key: str = None,
+    provider: str = "DeepSeek",
+    tool_start_callback=None,
+    tool_complete_callback=None,
+):
+    user_session_id = f"session_{user_id}"
+    user_hermes_home = os.path.abspath(
+        os.path.expanduser(f"~/.hermes/sessions/{user_session_id}")
+    )
+    os.makedirs(user_hermes_home, exist_ok=True)
+
+    agent_kwargs = dict(
+        provider=provider,
+        base_url=base_url,
+        model=model,
+        session_id=user_session_id,
+        quiet_mode=True,
+    )
+    if api_key:
+        agent_kwargs['api_key'] = api_key
+    if tool_start_callback:
+        agent_kwargs['tool_start_callback'] = tool_start_callback
+    if tool_complete_callback:
+        agent_kwargs['tool_complete_callback'] = tool_complete_callback
+
+    with _hermes_lock:
+        old_home = os.environ.get("HERMES_HOME")
+        try:
+            os.environ["HERMES_HOME"] = user_hermes_home
+            ai = AIAgent(**agent_kwargs)
+            result = ai.run_conversation(
+                query,
+                conversation_history=conversation_history,
+                stream_callback=stream_callback,
+            )
+        finally:
+            if old_home is not None:
+                os.environ["HERMES_HOME"] = old_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+
+    return result
+
+
 # ===== 用户认证 API =====
 
 from typing import List, Dict, Any, Optional
@@ -235,55 +290,51 @@ async def api_get_me(request: Request):
 
 # ===== AI Agent API =====
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
-
 class QueryRequest(BaseModel):
     query: str
-    messages: Optional[List[ChatMessage]] = None
+    conv_id: Optional[str] = None
     base_url: str = "https://api.deepseek.com"
     model: str = "deepseek-v4-flash"
-    api_key: Optional[str] = None  # 用户自定义 API Key，留空则使用系统默认
-    exa_key: Optional[str] = None  # 用户自定义 Exa API Key，用于 web_search
-
-def _build_history(messages: Optional[List[ChatMessage]]) -> Optional[List[Dict[str, Any]]]:
-    if not messages:
-        return None
-    return [{"role": m.role, "content": m.content} for m in messages]
+    provider: str = "DeepSeek"
+    api_key: Optional[str] = None
+    exa_key: Optional[str] = None
 
 
 @app.post("/api/v1/run")
-async def run_hermes(request: QueryRequest):
+async def run_hermes(request: QueryRequest, req: Request):
+    user_id = get_user_id(req)
+    history = get_hermes_messages(request.conv_id) if request.conv_id else None
+
+    if request.exa_key:
+        os.environ["EXA_API_KEY"] = request.exa_key
+
+    def _run_agent():
+        return run_agent_for_user(
+            user_id=user_id,
+            query=request.query,
+            conversation_history=history,
+            base_url=request.base_url,
+            model=request.model,
+            api_key=request.api_key,
+            provider=request.provider,
+        )
+
     try:
-        history = _build_history(request.messages)
-
-        def _run_agent():
-            if request.exa_key:
-                os.environ["EXA_API_KEY"] = request.exa_key
-            agent_kwargs = dict(
-                base_url=request.base_url,
-                model=request.model,
-                quiet_mode=True
-            )
-            if request.api_key:
-                agent_kwargs['api_key'] = request.api_key
-            ai = AIAgent(**agent_kwargs)
-            return ai.run_conversation(
-                request.query,
-                conversation_history=history
-            )
-
         result = await asyncio.to_thread(_run_agent)
 
         if isinstance(result, dict):
             response_text = result.get('final_response', '') or ''
+            hermes_msgs = result.get('messages', [])
         else:
             response_text = str(result) if result else ''
+            hermes_msgs = []
+
+        if request.conv_id and hermes_msgs:
+            save_hermes_messages(request.conv_id, hermes_msgs)
 
         return {
             "status": "success",
-            "response": response_text
+            "response": response_text,
         }
 
     except Exception as e:
@@ -291,13 +342,15 @@ async def run_hermes(request: QueryRequest):
 
 
 @app.post("/api/v1/run_stream")
-async def run_hermes_stream(request: QueryRequest):
+async def run_hermes_stream(request: QueryRequest, req: Request):
     import queue as _queue
     import json as _json
 
+    user_id = get_user_id(req)
+
     async def generate():
         q: _queue.Queue = _queue.Queue()
-        history = _build_history(request.messages)
+        history = get_hermes_messages(request.conv_id) if request.conv_id else None
 
         def _stream_callback(delta: str):
             if delta:
@@ -312,26 +365,31 @@ async def run_hermes_stream(request: QueryRequest):
         def _run_agent():
             if request.exa_key:
                 os.environ["EXA_API_KEY"] = request.exa_key
-            agent_kwargs = dict(
-                base_url=request.base_url,
-                model=request.model,
-                quiet_mode=True,
-                tool_start_callback=_tool_start_cb,
-                tool_complete_callback=_tool_complete_cb,
-            )
-            if request.api_key:
-                agent_kwargs['api_key'] = request.api_key
-            ai = AIAgent(**agent_kwargs)
+
             try:
-                result = ai.run_conversation(
-                    request.query,
+                result = run_agent_for_user(
+                    user_id=user_id,
+                    query=request.query,
                     conversation_history=history,
-                    stream_callback=_stream_callback
+                    stream_callback=_stream_callback,
+                    base_url=request.base_url,
+                    model=request.model,
+                    api_key=request.api_key,
+                    provider=request.provider,
+                    tool_start_callback=_tool_start_cb,
+                    tool_complete_callback=_tool_complete_cb,
                 )
+
                 if isinstance(result, dict):
                     final = result.get('final_response', '') or ''
+                    hermes_msgs = result.get('messages', [])
                 else:
                     final = str(result) if result else ''
+                    hermes_msgs = []
+
+                if request.conv_id and hermes_msgs:
+                    save_hermes_messages(request.conv_id, hermes_msgs)
+
                 q.put(("done", final))
                 return result
             except Exception as exc:

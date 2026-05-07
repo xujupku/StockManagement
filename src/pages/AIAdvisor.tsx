@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useStocks } from '../context/StockContext';
-import { analyzePortfolio, PREFERENCE_OPTIONS, type InvestPreferences, type AnalyzeResult } from '../api/analyze';
+import { useAIAdvisor } from '../context/AIAdvisorContext';
+import { PREFERENCE_OPTIONS, type InvestPreferences, type AnalyzeResult } from '../api/analyze';
 import { authFetch } from '../api/authFetch';
 
 const PREFS_STORAGE_KEY = 'ai_invest_preferences';
@@ -77,13 +78,11 @@ function detectStage(text: string): { step: number; label: string } {
   return { step: 0, label: '' };
 }
 
-// 解析历史消息中的分析结果
 function parseAnalysisFromMessages(messages: Message[]): { userQuery: string; result: AnalyzeResult } | null {
   const userMsg = messages.find(m => m.role === 'user');
   const assistantMsg = messages.find(m => m.role === 'assistant');
   if (!userMsg || !assistantMsg) return null;
 
-  // 尝试从 assistant 消息中提取 JSON
   try {
     const jsonMatch = assistantMsg.content.match(/```json\s*([\s\S]*?)```/);
     if (jsonMatch) {
@@ -113,7 +112,6 @@ function parseAnalysisFromMessages(messages: Message[]): { userQuery: string; re
     }
   } catch {}
 
-  // 无法解析 JSON，构建一个简化结果
   return {
     userQuery: userMsg.content,
     result: {
@@ -195,19 +193,20 @@ function MultiPreferenceGroup({ label, desc, options, values, onChange }: {
 
 export default function AIAdvisor() {
   const { holdings } = useStocks();
+  const {
+    runningConvId, currentConvId, result, error, progressText,
+    startAnalysis, stopAnalysis, clearResult, loadHistoryResult, switchToRunning,
+  } = useAIAdvisor();
+
+  const isRunning = !!runningConvId;
+  const isViewingRunning = currentConvId === runningConvId && isRunning;
+
   const [prefs, setPrefs] = useState<InvestPreferences>(loadPrefs);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState<AnalyzeResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [showPrefs, setShowPrefs] = useState(false);
   const [showHistory, setShowHistory] = useState<boolean>(false);
-  const [progressText, setProgressText] = useState('');
-  const abortRef = useRef<AbortController | null>(null);
   const progressRef = useRef<HTMLDivElement>(null);
 
-  // 历史会话
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [currentConvId, setCurrentConvId] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -225,74 +224,41 @@ export default function AIAdvisor() {
 
   useEffect(() => {
     loadHistory().then((data: Conversation[]) => {
-      if (data.length > 0) {
-        const latest = data[0];
-        setCurrentConvId(latest.id);
-        loadConversationMessages(latest.id);
+      if (!isRunning && !result && data.length > 0) {
+        loadConversationMessages(data[0].id);
       }
     });
   }, []);
+
   useEffect(() => { savePrefs(prefs); }, [prefs]);
 
-  // 创建新会话
-  const createNewConversation = async (): Promise<string> => {
-    const res = await authFetch('/api/conversations', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: '新分析', type: CONV_TYPE }),
-    });
-    const data = await res.json();
-    await loadHistory();
-    return data.id;
-  };
+  useEffect(() => {
+    if (isViewingRunning && progressRef.current) {
+      progressRef.current.scrollTo({ top: progressRef.current.scrollHeight });
+    }
+  }, [progressText, isViewingRunning]);
 
-  // 加载历史会话消息
   const loadConversationMessages = async (convId: string) => {
+    if (convId === runningConvId) {
+      switchToRunning();
+      return;
+    }
     try {
       const res = await authFetch(`/api/conversations/${convId}/messages`);
       const messages: Message[] = await res.json();
       const parsed = parseAnalysisFromMessages(messages);
       if (parsed) {
-        setResult(parsed.result);
-        setError(null);
-        setProgressText('');
+        loadHistoryResult(convId, parsed.result);
       }
     } catch (e) {
       console.error('加载历史消息失败', e);
     }
   };
 
-  // 保存用户查询和分析结果
-  const saveAnalysisResult = async (convId: string, userQuery: string, analysisText: string) => {
-    // 保存用户消息
-    await authFetch(`/api/conversations/${convId}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'user', content: userQuery }),
-    });
-    // 保存 assistant 消息
-    await authFetch(`/api/conversations/${convId}/messages`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'assistant', content: analysisText }),
-    });
-    // 更新会话标题
-    const title = userQuery.slice(0, 20) + (userQuery.length > 20 ? '...' : '');
-    await authFetch(`/api/conversations/${convId}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title }),
-    });
-    await loadHistory();
-  };
-
-  // 删除会话
   const deleteConversation = async (convId: string) => {
     await authFetch(`/api/conversations/${convId}`, { method: 'DELETE' });
     if (currentConvId === convId) {
-      setCurrentConvId(null);
-      setResult(null);
-      setProgressText('');
+      clearResult();
     }
     await loadHistory();
   };
@@ -301,73 +267,14 @@ export default function AIAdvisor() {
     setPrefs(p => ({ ...p, [key]: value }));
   };
 
-  const handleAnalyze = async () => {
-    if (prefs.factors.length === 0) {
-      setError('请至少选择一个关注因素');
-      return;
-    }
-    setAnalyzing(true);
-    setError(null);
-    setResult(null);
+  const handleAnalyze = () => {
     setShowPrefs(false);
-    setProgressText('');
-
-    // 创建新会话
-    const convId = await createNewConversation();
-    setCurrentConvId(convId);
-
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    let fullText = '';
-
-    try {
-      const res = await analyzePortfolio(holdings, prefs, {
-        onProgress: (text) => {
-          fullText = text;
-          setProgressText(text);
-          setTimeout(() => {
-            progressRef.current?.scrollTo({ top: progressRef.current.scrollHeight });
-          }, 0);
-        },
-        signal: controller.signal,
-      });
-      setResult(res);
-      // 保存分析结果
-      await saveAnalysisResult(convId, buildUserQuery(), fullText);
-    } catch (e: any) {
-      if (e.name === 'AbortError') {
-        setProgressText(prev => prev + '\n\n[已停止分析]');
-      } else {
-        setError(e.message || '分析请求失败');
-      }
-    } finally {
-      setAnalyzing(false);
-      abortRef.current = null;
-    }
+    startAnalysis(prefs);
   };
 
-  const handleStop = () => {
-    abortRef.current?.abort();
-  };
-
-  const buildUserQuery = () => {
-    const prefSummary = [
-      `风险偏好: ${prefLabel('riskTolerance', prefs.riskTolerance)}`,
-      `投资期限: ${prefLabel('horizon', prefs.horizon)}`,
-      `投资目标: ${prefLabel('goal', prefs.goal)}`,
-      `关注因素: ${prefs.factors.map(f => prefLabel('factors', f)).join('、')}`,
-      `集中度偏好: ${prefLabel('concentration', prefs.concentration)}`,
-      `止损策略: ${prefLabel('stopLoss', prefs.stopLoss)}`,
-    ].join('\n');
-    return `持仓分析请求\n${prefSummary}\n\n当前持仓: ${holdings.map(h => `${h.code}(${h.name})`).join(', ')}`;
-  };
-
-  // 当前阶段检测
   const stage = detectStage(progressText);
   const progressPercent = Math.min((stage.step / 5) * 100, 100);
 
-  // 当前偏好摘要标签列表
   const prefTags = [
     prefLabel('riskTolerance', prefs.riskTolerance),
     prefLabel('horizon', prefs.horizon),
@@ -385,11 +292,8 @@ export default function AIAdvisor() {
           <span className="font-semibold text-gray-900 dark:text-white text-sm">分析历史</span>
           <div className="flex items-center gap-2">
             <button
-              onClick={async () => {
-                setCurrentConvId(null);
-                setResult(null);
-                setProgressText('');
-                setError(null);
+              onClick={() => {
+                clearResult();
                 setShowHistory(false);
               }}
               className="text-xs px-2 py-1 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition"
@@ -411,7 +315,9 @@ export default function AIAdvisor() {
             <div className="px-4 py-8 text-center text-xs text-gray-400">暂无历史记录</div>
           ) : (
             <div className="py-2">
-              {conversations.map(conv => (
+              {conversations.map(conv => {
+                const isThisRunning = conv.id === runningConvId;
+                return (
                 <div
                   key={conv.id}
                   className={`group px-4 py-3 cursor-pointer transition relative ${
@@ -420,7 +326,6 @@ export default function AIAdvisor() {
                       : 'hover:bg-gray-50 dark:hover:bg-gray-900'
                   }`}
                   onClick={() => {
-                    setCurrentConvId(conv.id);
                     loadConversationMessages(conv.id);
                     setShowHistory(false);
                   }}
@@ -428,8 +333,13 @@ export default function AIAdvisor() {
                   <div className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate pr-6">
                     {conv.title}
                   </div>
-                  <div className="text-xs text-gray-400 mt-0.5">
-                    {new Date(conv.updated_at).toLocaleDateString()}
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span className="text-xs text-gray-400">
+                      {new Date(conv.updated_at).toLocaleDateString()}
+                    </span>
+                    {isThisRunning && (
+                      <span className="text-[10px] px-1 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
+                    )}
                   </div>
                   <button
                     onClick={(e) => {
@@ -444,7 +354,8 @@ export default function AIAdvisor() {
                     </svg>
                   </button>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -549,13 +460,24 @@ export default function AIAdvisor() {
             </div>
           )}
 
+          {/* 后台分析进行中提示 */}
+          {isRunning && !isViewingRunning && (
+            <div
+              onClick={switchToRunning}
+              className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-indigo-50 dark:bg-indigo-500/10 border border-indigo-200 dark:border-indigo-500/20 cursor-pointer hover:bg-indigo-100 dark:hover:bg-indigo-500/15 transition"
+            >
+              <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin shrink-0" />
+              <span className="text-sm text-indigo-600 dark:text-indigo-400 font-medium">分析正在后台执行中，点击查看进度</span>
+            </div>
+          )}
+
           {/* 主操作按钮 */}
-          {!analyzing ? (
+          {!isViewingRunning ? (
             <button
               onClick={handleAnalyze}
-              disabled={holdings.length === 0}
+              disabled={holdings.length === 0 || isRunning}
               className={`w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm ${
-                holdings.length === 0
+                holdings.length === 0 || isRunning
                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
                   : 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 hover:shadow-md'
               }`}
@@ -564,7 +486,7 @@ export default function AIAdvisor() {
             </button>
           ) : (
             <button
-              onClick={handleStop}
+              onClick={stopAnalysis}
               className="w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm bg-red-500 text-white hover:bg-red-600"
             >
               停止分析
@@ -572,7 +494,7 @@ export default function AIAdvisor() {
           )}
 
           {/* 进度面板 */}
-          {analyzing && (
+          {isViewingRunning && (
             <div className="bg-white dark:bg-gray-900 rounded-2xl p-5 shadow-sm border border-gray-100 dark:border-gray-800 space-y-3">
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-indigo-600 dark:text-indigo-400">

@@ -48,7 +48,9 @@ cp .env.example .env
 # 编辑 .env 填入 DEEPSEEK_API_KEY、EXA_API_KEY 等
 
 # 启动后端服务
-python3 server/main.py
+nohup python3 main.py > py.log 2>&1 &
+ps aux | grep "python3 main.py"
+
 # 使用 systemd 托管后端服务
 sudo cp /opt/StockProject/deploy/stock-backend.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -124,5 +126,9 @@ ssh root@39.96.197.206
 cd /opt/StockProject
 npm run build
 sudo systemctl restart stock-backend
+
+# 启动后端服务
+source ~/hermes_env/bin/activate
+nohup python3 main.py > py.log 2>&1 &
 ```
 
