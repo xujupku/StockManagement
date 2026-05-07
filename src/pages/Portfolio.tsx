@@ -80,7 +80,8 @@ export default function Portfolio() {
         </button>
       </div>
 
-      <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden">
+      {/* 桌面端：表格 */}
+      <div className="hidden md:block bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -130,6 +131,56 @@ export default function Portfolio() {
             暂无持仓，点击"添加股票"开始投资
           </div>
         )}
+      </div>
+
+      {/* 移动端：卡片列表 */}
+      <div className="md:hidden space-y-3">
+        {holdings.length === 0 && (
+          <div className="py-16 text-center text-gray-400 dark:text-gray-500">
+            暂无持仓，点击"添加股票"开始投资
+          </div>
+        )}
+        {holdings.map(stock => {
+          const pnl = (stock.currentPrice - stock.buyPrice) * stock.quantity;
+          const pnlPercent = ((stock.currentPrice - stock.buyPrice) / stock.buyPrice) * 100;
+          const isUp = pnl >= 0;
+          const sym = stock.code.endsWith('.HK') || (/^\d+$/.test(stock.code) && stock.code.length <= 5) ? 'HK$' : stock.code[0] >= '0' && stock.code[0] <= '9' ? '¥' : '$';
+          return (
+            <div key={stock.code} className="bg-white dark:bg-gray-900 rounded-2xl p-4 shadow-sm border border-gray-100 dark:border-gray-800">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <span className="font-semibold text-gray-900 dark:text-white">{stock.name}</span>
+                  <span className="ml-2 text-xs text-gray-400">{stock.code}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setEditCode(stock.code)} className="text-indigo-500 text-xs font-medium">编辑</button>
+                  <button onClick={() => removeHolding(stock.code)} className="text-red-400 text-xs font-medium">删除</button>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div>
+                  <div className="text-[11px] text-gray-400 mb-0.5">现价</div>
+                  <div className="text-sm font-medium text-gray-900 dark:text-white">{sym}{stock.currentPrice.toFixed(2)}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-gray-400 mb-0.5">盈亏</div>
+                  <div className={`text-sm font-medium ${isUp ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {isUp ? '+' : ''}{sym}{pnl.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] text-gray-400 mb-0.5">盈亏%</div>
+                  <div className={`text-sm font-medium ${isUp ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {isUp ? '+' : ''}{pnlPercent.toFixed(2)}%
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center justify-between mt-2 pt-2 border-t border-gray-50 dark:border-gray-800 text-xs text-gray-400">
+                <span>买入 {sym}{stock.buyPrice.toFixed(2)} × {stock.quantity}股</span>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {showAdd && (

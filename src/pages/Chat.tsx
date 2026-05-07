@@ -78,10 +78,21 @@ export default function Chat() {
   const [loading, setLoading] = useState(false);
   const [toolStatus, setToolStatus] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isInitialLoad = useRef(true);
+  const userScrolledUp = useRef(false);
+
+  // 检测用户是否手动上滑
+  const handleScroll = useCallback(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const distanceFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    userScrolledUp.current = distanceFromBottom > 80;
+  }, []);
 
   useEffect(() => {
+    if (userScrolledUp.current && !isInitialLoad.current) return;
     messagesEndRef.current?.scrollIntoView({ behavior: isInitialLoad.current ? 'instant' : 'smooth' });
     isInitialLoad.current = false;
   }, [messages, loading]);
@@ -179,6 +190,7 @@ export default function Chat() {
   const handleSend = useCallback(async () => {
     const text = input.trim();
     if (!text || loading) return;
+    userScrolledUp.current = false;
 
     let convId = currentConv?.id;
     if (!convId) {
@@ -352,7 +364,7 @@ export default function Chat() {
       {/* 右侧：聊天区域 */}
       <div className="flex-1 flex flex-col min-h-0 min-w-0">
         {/* 头部 */}
-        <div className="px-3 md:px-6 py-2 md:py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between">
+        <div className="px-3 md:px-6 py-2 md:py-3 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={() => setShowHistory(true)}
@@ -372,27 +384,27 @@ export default function Chat() {
         </div>
 
         {/* 消息区域 */}
-        <div className="flex-1 overflow-y-auto px-3 md:px-6 py-4 space-y-4">
-          <div className="max-w-5xl mx-auto space-y-4">
+        <div ref={messagesContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto overflow-x-hidden px-3 md:px-6 py-3 md:py-4">
+          <div className="max-w-5xl mx-auto space-y-3 md:space-y-4">
           {messages.length === 0 && !loading && (
-            <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500">
-              <svg className="w-16 h-16 mb-4 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-gray-500 py-8">
+              <svg className="w-12 md:w-16 h-12 md:h-16 mb-3 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
-              <p className="text-base font-medium">有什么股票问题想咨询？</p>
-              <p className="text-sm mt-2">例如：帮我分析一下贵州茅台、微软股票是否值得投资</p>
+              <p className="text-sm md:text-base font-medium">有什么股票问题想咨询？</p>
+              <p className="text-xs md:text-sm mt-1.5">例如：帮我分析一下贵州茅台是否值得投资</p>
             </div>
           )}
 
           {messages.map((msg, i) => (
             <div key={msg.id || i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[90%] md:max-w-[85%] px-3 md:px-4 py-2.5 md:py-3 rounded-2xl text-sm leading-relaxed ${
+              <div className={`max-w-[92%] md:max-w-[85%] min-w-0 overflow-hidden px-3 md:px-4 py-2 md:py-3 rounded-2xl text-sm leading-relaxed ${
                 msg.role === 'user'
-                  ? 'bg-indigo-500 text-white rounded-br-md whitespace-pre-wrap'
+                  ? 'bg-indigo-500 text-white rounded-br-md whitespace-pre-wrap break-words'
                   : 'bg-gray-50 dark:bg-gray-800 text-gray-800 dark:text-gray-200 rounded-bl-md'
               }`}>
                 {msg.role === 'assistant' && msg.content ? (
-                  <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none prose-p:my-1.5 prose-ul:my-1.5 prose-ol:my-1.5 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2">
+                  <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:my-2 prose-pre:my-2">
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       components={{
@@ -422,7 +434,7 @@ export default function Chat() {
 
         {/* 工具状态指示器 */}
         {toolStatus && (
-          <div className="px-3 md:px-6 py-2 border-t border-gray-50 dark:border-gray-800">
+          <div className="px-3 md:px-6 py-1.5 border-t border-gray-50 dark:border-gray-800 shrink-0">
             <div className="text-xs text-gray-500 dark:text-gray-400 animate-pulse">
               {toolStatus}
             </div>
@@ -430,20 +442,20 @@ export default function Chat() {
         )}
 
         {/* 输入区 */}
-        <div className="px-3 md:px-6 py-3 md:py-4 border-t border-gray-100 dark:border-gray-800">
-          <div className="max-w-5xl mx-auto flex items-end gap-2 md:gap-3">
+        <div className="px-3 md:px-6 py-2 md:py-3 border-t border-gray-100 dark:border-gray-800 shrink-0">
+          <div className="max-w-5xl mx-auto flex items-end gap-2">
             <textarea
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入股票相关问题... (Enter 发送，Shift+Enter 换行)"
-              rows={2}
-              className="flex-1 resize-none px-3 md:px-4 py-2.5 md:py-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none placeholder-gray-400 shadow-sm"
+              placeholder="输入问题... (Enter发送)"
+              rows={1}
+              className="flex-1 resize-none px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none placeholder-gray-400 shadow-sm"
             />
             {loading ? (
               <button
                 onClick={() => abortRef.current?.abort()}
-                className="shrink-0 px-4 md:px-5 py-2.5 md:py-3 rounded-xl font-medium text-sm transition shadow-sm bg-red-500 text-white hover:bg-red-600"
+                className="shrink-0 px-3 md:px-4 py-2 rounded-xl font-medium text-sm transition shadow-sm bg-red-500 text-white hover:bg-red-600"
               >
                 停止
               </button>
@@ -451,7 +463,7 @@ export default function Chat() {
               <button
                 onClick={handleSend}
                 disabled={!input.trim()}
-                className={`shrink-0 px-4 md:px-5 py-2.5 md:py-3 rounded-xl font-medium text-sm transition shadow-sm ${
+                className={`shrink-0 px-3 md:px-4 py-2 rounded-xl font-medium text-sm transition shadow-sm ${
                   input.trim()
                     ? 'bg-indigo-500 text-white hover:bg-indigo-600'
                     : 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
