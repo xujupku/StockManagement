@@ -285,45 +285,48 @@ export default function AIAdvisor() {
   ];
 
   return (
-    <div className="flex h-full">
-      {/* 左侧：历史列表 */}
-      <div className={`w-64 shrink-0 fixed md:relative inset-y-0 left-0 z-30 md:z-auto transition-transform duration-300 h-full border-r border-gray-200 dark:border-gray-800 bg-white dark:bg-gray-950 flex flex-col ${showHistory ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
-        <div className="px-4 py-4 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
-          <span className="font-semibold text-gray-900 dark:text-white text-sm">分析历史</span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => {
-                clearResult();
-                setShowHistory(false);
-              }}
-              className="text-xs px-2 py-1 rounded-lg bg-indigo-500 text-white hover:bg-indigo-600 transition"
-            >
-              + 新分析
-            </button>
-            <button
-              onClick={() => setShowHistory(false)}
-              className="md:hidden p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+    <div className="flex h-full md:h-auto -m-4 md:m-0">
+      {/* 移动端遮罩 */}
+      {showHistory && (
+        <div className="md:hidden fixed inset-0 bg-black/40 z-20" onClick={() => setShowHistory(false)} />
+      )}
+      {/* 移动端：底部弹出面板 / 桌面端：左侧侧边栏 */}
+      <div className={`
+        md:w-64 md:shrink-0 md:border-r border-gray-200 dark:border-gray-800 flex flex-col bg-white dark:bg-gray-950
+        fixed md:relative z-30 md:z-auto transition-transform duration-300 ease-out
+        inset-x-0 bottom-0 max-h-[65vh] rounded-t-2xl md:rounded-none md:inset-y-0 md:left-0 md:max-h-none md:h-full
+        ${showHistory ? 'translate-y-0' : 'translate-y-full md:translate-y-0'}
+      `}>
+        {/* 移动端拖拽指示器 */}
+        <div className="md:hidden flex justify-center pt-2 pb-1">
+          <div className="w-10 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-800 flex items-center justify-between">
+          <span className="font-semibold text-gray-900 dark:text-white text-sm">分析历史</span>
+          <button
+            onClick={() => {
+              clearResult();
+              setShowHistory(false);
+            }}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 rounded-lg transition"
+          >
+            + 新分析
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto pb-[calc(env(safe-area-inset-bottom)+3.5rem)] md:pb-0">
           {conversations.length === 0 ? (
             <div className="px-4 py-8 text-center text-xs text-gray-400">暂无历史记录</div>
           ) : (
-            <div className="py-2">
+            <div className="py-1">
               {conversations.map(conv => {
                 const isThisRunning = conv.id === runningConvId;
                 return (
                 <div
                   key={conv.id}
-                  className={`group px-4 py-3 cursor-pointer transition relative ${
+                  className={`group px-4 py-3 cursor-pointer transition relative active:bg-gray-100 dark:active:bg-gray-800 ${
                     currentConvId === conv.id
                       ? 'bg-indigo-50 dark:bg-indigo-500/10'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-900'
+                      : ''
                   }`}
                   onClick={() => {
                     loadConversationMessages(conv.id);
@@ -338,7 +341,7 @@ export default function AIAdvisor() {
                       {new Date(conv.updated_at).toLocaleDateString()}
                     </span>
                     {isThisRunning && (
-                      <span className="text-[10px] px-1 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
                     )}
                   </div>
                   <button
@@ -346,7 +349,7 @@ export default function AIAdvisor() {
                       e.stopPropagation();
                       deleteConversation(conv.id);
                     }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-500/20 text-red-400 transition"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 rounded-lg text-red-400 transition md:opacity-0 md:group-hover:opacity-100 hover:bg-red-100 dark:hover:bg-red-500/20"
                     title="删除"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -363,31 +366,30 @@ export default function AIAdvisor() {
 
       {/* 右侧：主内容 */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6">
-        <div className="max-w-4xl mx-auto space-y-6">
+        <div className="max-w-4xl mx-auto space-y-4 md:space-y-6">
           {/* 标题栏 */}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowHistory(true)}
-                className="md:hidden p-2 -ml-2 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                className="md:hidden w-9 h-9 -ml-1 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 active:bg-gray-200 transition"
                 title="打开历史记录"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
                 </svg>
               </button>
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 持仓分析</h2>
+              <h2 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white">AI 持仓分析</h2>
             </div>
             <button
               onClick={() => setShowPrefs(s => !s)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+              className="w-9 h-9 flex items-center justify-center rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 active:bg-gray-200 transition"
               title="修改投资偏好"
             >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
-              偏好设置
             </button>
           </div>
 
@@ -476,10 +478,10 @@ export default function AIAdvisor() {
             <button
               onClick={handleAnalyze}
               disabled={holdings.length === 0 || isRunning}
-              className={`w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm ${
+              className={`w-full py-4 rounded-2xl text-sm font-semibold transition shadow-sm ${
                 holdings.length === 0 || isRunning
                   ? 'bg-gray-200 dark:bg-gray-800 text-gray-400 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 hover:shadow-md'
+                  : 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white hover:from-indigo-600 hover:to-purple-600 active:from-indigo-700 active:to-purple-700 hover:shadow-md'
               }`}
             >
               {holdings.length === 0 ? '请先添加持仓股票' : result ? '重新分析' : '开始 AI 智能分析'}
@@ -487,7 +489,7 @@ export default function AIAdvisor() {
           ) : (
             <button
               onClick={stopAnalysis}
-              className="w-full py-3.5 rounded-2xl text-sm font-semibold transition shadow-sm bg-red-500 text-white hover:bg-red-600"
+              className="w-full py-4 rounded-2xl text-sm font-semibold transition shadow-sm bg-red-500 text-white hover:bg-red-600 active:bg-red-700"
             >
               停止分析
             </button>

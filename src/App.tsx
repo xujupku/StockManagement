@@ -18,7 +18,10 @@ function AppContent() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-gray-950">
+      <div
+        className="flex items-center justify-center bg-slate-50 dark:bg-gray-950"
+        style={{ minHeight: '100dvh' }}
+      >
         <div className="text-gray-400 text-sm">加载中...</div>
       </div>
     );

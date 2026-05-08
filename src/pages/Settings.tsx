@@ -1,47 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { useAuth } from '../context/AuthContext';
 import { getApiConfig, setApiConfig } from '../api/config';
-import { authFetch } from '../api/authFetch';
-
-interface LogEntry {
-  id: number;
-  timestamp: string;
-  event_type: string;
-  page: string;
-  target: string;
-  detail: string;
-}
-
-interface LogStats {
-  total: number;
-  by_type: { event_type: string; cnt: number }[];
-  by_page: { page: string; cnt: number }[];
-}
-
-const EVENT_LABELS: Record<string, string> = {
-  click: '点击',
-  navigation: '导航',
-  page_view: '页面访问',
-  page_hide: '离开页面',
-  page_show: '返回页面',
-  error: 'JS 错误',
-  unhandled_rejection: '未处理异常',
-};
 
 export default function Settings() {
   const { dark, toggle } = useTheme();
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const config = getApiConfig();
   const [apiKey, setApiKey] = useState(config.apiKey);
   const [exaKey, setExaKey] = useState(config.exaKey);
   const [saved, setSaved] = useState(false);
-  const [showLogs, setShowLogs] = useState(false);
-  const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [stats, setStats] = useState<LogStats | null>(null);
-  const [logTab, setLogTab] = useState<'logs' | 'stats'>('logs');
-  const [logFilter, setLogFilter] = useState({ event_type: '', page: '' });
-  const [logLoading, setLogLoading] = useState(false);
 
   const handleSave = () => {
     setApiConfig(config.apiUrl, apiKey, exaKey);
@@ -49,33 +17,8 @@ export default function Settings() {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const fetchLogs = useCallback(async () => {
-    setLogLoading(true);
-    try {
-      const params = new URLSearchParams();
-      if (logFilter.event_type) params.set('event_type', logFilter.event_type);
-      if (logFilter.page) params.set('page', logFilter.page);
-      params.set('limit', '200');
-      const res = await authFetch(`/api/activity-logs?${params}`);
-      if (res.ok) setLogs(await res.json());
-    } finally {
-      setLogLoading(false);
-    }
-  }, [logFilter]);
-
-  const fetchStats = useCallback(async () => {
-    const res = await authFetch('/api/activity-logs/stats');
-    if (res.ok) setStats(await res.json());
-  }, []);
-
-  useEffect(() => {
-    if (!showLogs) return;
-    if (logTab === 'logs') fetchLogs();
-    else fetchStats();
-  }, [showLogs, logTab, fetchLogs, fetchStats]);
-
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl mx-auto space-y-6 pb-4">
       <h2 className="text-2xl font-bold text-gray-900 dark:text-white">设置</h2>
 
       {/* 用户信息 */}
@@ -105,9 +48,43 @@ export default function Settings() {
           </div>
           <button
             onClick={toggle}
-            className={`relative w-14 h-7 rounded-full transition-colors ${dark ? 'bg-indigo-500' : 'bg-gray-300'}`}
+            type="button"
+            aria-label="切换深色模式"
+            aria-pressed={dark}
+            className={`relative inline-flex h-9 w-16 shrink-0 items-center rounded-full p-1 transition-all duration-300 ${
+              dark
+                ? 'bg-gradient-to-r from-indigo-500 to-violet-500 shadow-lg shadow-indigo-500/25'
+                : 'bg-gray-200 ring-1 ring-inset ring-gray-300'
+            }`}
           >
-            <span className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${dark ? 'translate-x-7.5' : 'translate-x-0.5'}`} />
+            <span
+              className={`absolute left-2 text-[11px] font-semibold transition-all duration-300 ${
+                dark ? 'opacity-0 -translate-x-1' : 'opacity-100 translate-x-0 text-gray-500'
+              }`}
+            >
+              OFF
+            </span>
+            <span
+              className={`absolute right-2 text-[11px] font-semibold transition-all duration-300 ${
+                dark ? 'opacity-100 translate-x-0 text-white/90' : 'opacity-0 translate-x-1'
+              }`}
+            >
+              ON
+            </span>
+            <span
+              className="relative z-10 flex h-7 w-7 items-center justify-center rounded-full bg-white shadow-[0_3px_10px_rgba(15,23,42,0.18)] transition-transform duration-300"
+              style={{ transform: dark ? 'translateX(1.75rem)' : 'translateX(0)' }}
+            >
+              {dark ? (
+                <svg className="h-4 w-4 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646a9 9 0 1011.708 11.708z" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2.25M12 18.75V21M4.97 4.97l1.591 1.591M17.439 17.439l1.591 1.591M3 12h2.25M18.75 12H21M4.97 19.03l1.591-1.591M17.439 6.561l1.591-1.591M15.75 12a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0z" />
+                </svg>
+              )}
+            </span>
           </button>
         </div>
       </div>
@@ -126,7 +103,7 @@ export default function Settings() {
               className="w-full px-4 py-2 rounded-xl border border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
             />
             <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
-              设置您自己的 DeepSeek API Key 后，AI 分析将使用您的额度。留空则使用系统提供的共享额度。
+              设置您自己的 DeepSeek API Key 后，AI 分析将使用您的额度。留空则使用系统提供的共享额度。获取密钥：<a href="https://platform.deepseek.com/api_keys" target="_blank" className="text-indigo-500 hover:underline">platform.deepseek.com</a>
             </p>
           </div>
           <div>
@@ -151,157 +128,12 @@ export default function Settings() {
         </div>
       </div>
 
-      {/* 操作日志 */}
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-4 md:p-6 shadow-sm border border-gray-100 dark:border-gray-800">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-medium text-gray-500 dark:text-gray-400">操作日志</h3>
-          <button
-            onClick={() => setShowLogs(!showLogs)}
-            className="text-xs text-indigo-500 hover:text-indigo-600 transition"
-          >
-            {showLogs ? '收起' : '展开查看'}
-          </button>
-        </div>
-
-        {showLogs && (
-          <div className="space-y-3">
-            {/* Tab 切换 */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setLogTab('logs')}
-                className={`px-3 py-1 text-xs rounded-md transition ${logTab === 'logs' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300'}`}
-              >
-                日志列表
-              </button>
-              <button
-                onClick={() => setLogTab('stats')}
-                className={`px-3 py-1 text-xs rounded-md transition ${logTab === 'stats' ? 'bg-indigo-500 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300'}`}
-              >
-                统计概览
-              </button>
-            </div>
-
-            {logTab === 'logs' && (
-              <>
-                {/* 筛选栏 */}
-                <div className="flex gap-2 flex-wrap">
-                  <select
-                    value={logFilter.event_type}
-                    onChange={(e) => setLogFilter(f => ({ ...f, event_type: e.target.value }))}
-                    className="text-xs border rounded-md px-2 py-1 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200"
-                  >
-                    <option value="">全部类型</option>
-                    <option value="click">点击</option>
-                    <option value="navigation">导航</option>
-                    <option value="page_view">页面访问</option>
-                    <option value="error">错误</option>
-                    <option value="unhandled_rejection">未处理异常</option>
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="按页面筛选..."
-                    value={logFilter.page}
-                    onChange={(e) => setLogFilter(f => ({ ...f, page: e.target.value }))}
-                    className="text-xs border rounded-md px-2 py-1 w-32 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-200"
-                  />
-                  <button
-                    onClick={fetchLogs}
-                    className="text-xs px-3 py-1 bg-indigo-500 text-white rounded-md hover:bg-indigo-600 transition"
-                  >
-                    刷新
-                  </button>
-                </div>
-
-                {/* 日志表格 */}
-                <div className="max-h-80 overflow-auto border rounded-lg dark:border-gray-700">
-                  {logLoading ? (
-                    <div className="p-4 text-center text-gray-400 text-sm">加载中...</div>
-                  ) : (
-                    <table className="w-full text-xs">
-                      <thead className="bg-gray-50 dark:bg-gray-800 sticky top-0">
-                        <tr>
-                          <th className="text-left px-2 py-1.5 font-medium text-gray-500 dark:text-gray-400">时间</th>
-                          <th className="text-left px-2 py-1.5 font-medium text-gray-500 dark:text-gray-400">类型</th>
-                          <th className="text-left px-2 py-1.5 font-medium text-gray-500 dark:text-gray-400">页面</th>
-                          <th className="text-left px-2 py-1.5 font-medium text-gray-500 dark:text-gray-400">目标</th>
-                          <th className="text-left px-2 py-1.5 font-medium text-gray-500 dark:text-gray-400">详情</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-                        {logs.map((l) => (
-                          <tr key={l.id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                            <td className="px-2 py-1.5 text-gray-600 dark:text-gray-300 whitespace-nowrap">
-                              {new Date(l.timestamp).toLocaleString('zh-CN', { hour12: false })}
-                            </td>
-                            <td className="px-2 py-1.5">
-                              <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                                l.event_type === 'error' || l.event_type === 'unhandled_rejection'
-                                  ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                                  : l.event_type === 'click'
-                                  ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
-                                  : 'bg-gray-100 text-gray-600 dark:bg-gray-700 dark:text-gray-300'
-                              }`}>
-                                {EVENT_LABELS[l.event_type] || l.event_type}
-                              </span>
-                            </td>
-                            <td className="px-2 py-1.5 text-gray-600 dark:text-gray-300">{l.page}</td>
-                            <td className="px-2 py-1.5 text-gray-500 dark:text-gray-400 max-w-[120px] truncate">{l.target}</td>
-                            <td className="px-2 py-1.5 text-gray-500 dark:text-gray-400 max-w-[160px] truncate">{l.detail}</td>
-                          </tr>
-                        ))}
-                        {logs.length === 0 && (
-                          <tr>
-                            <td colSpan={5} className="px-2 py-6 text-center text-gray-400">暂无日志记录</td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-              </>
-            )}
-
-            {logTab === 'stats' && stats && (
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">日志总量</div>
-                  <div className="text-xl font-bold text-gray-800 dark:text-gray-100">{stats.total.toLocaleString()}</div>
-                </div>
-                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3">
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">事件类型数</div>
-                  <div className="text-xl font-bold text-gray-800 dark:text-gray-100">{stats.by_type.length}</div>
-                </div>
-                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 col-span-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">按事件类型</div>
-                  <div className="space-y-1">
-                    {stats.by_type.map((t) => (
-                      <div key={t.event_type} className="flex justify-between text-xs">
-                        <span className="text-gray-600 dark:text-gray-300">{EVENT_LABELS[t.event_type] || t.event_type}</span>
-                        <span className="font-medium text-gray-800 dark:text-gray-100">{t.cnt}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 col-span-2">
-                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-2">热门页面</div>
-                  <div className="space-y-1">
-                    {stats.by_page.map((p) => (
-                      <div key={p.page} className="flex justify-between text-xs">
-                        <span className="text-gray-600 dark:text-gray-300">{p.page || '(空)'}</span>
-                        <span className="font-medium text-gray-800 dark:text-gray-100">{p.cnt}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {logTab === 'stats' && !stats && (
-              <div className="text-center text-gray-400 text-sm py-4">加载中...</div>
-            )}
-          </div>
-        )}
-      </div>
+      <button
+        onClick={logout}
+        className="w-full px-4 py-3 rounded-2xl border border-red-200 dark:border-red-500/20 bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-red-400 text-sm font-medium hover:bg-red-100 dark:hover:bg-red-500/15 transition"
+      >
+        {user?.id === 'default' ? '退出游客模式' : '退出登录'}
+      </button>
     </div>
   );
 }

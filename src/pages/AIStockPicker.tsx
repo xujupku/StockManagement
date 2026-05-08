@@ -546,29 +546,32 @@ export default function AIStockPicker() {
   const isLoading = currentConv ? (globalTasks.get(currentConv.id)?.status === 'running') : false;
 
   return (
-    <div className="h-[calc(100vh-4rem)] flex">
-      {/* 左侧：历史记录 */}
-      <div className={`fixed md:relative inset-y-0 left-0 z-30 md:z-auto transition-transform duration-300 w-56 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-gray-50 dark:bg-gray-800/50 rounded-l-2xl ${showHistory ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}`}>
+    <div className="h-full flex -m-4 md:m-0">
+      {/* 移动端遮罩 */}
+      {showHistory && (
+        <div className="md:hidden fixed inset-0 bg-black/40 z-20" onClick={() => setShowHistory(false)} />
+      )}
+      {/* 移动端：底部弹出面板 / 桌面端：左侧侧边栏 */}
+      <div className={`
+        md:w-56 md:shrink-0 md:border-r border-gray-200 dark:border-gray-700 flex flex-col bg-white dark:bg-gray-900 md:bg-gray-50 md:dark:bg-gray-800/50 md:rounded-l-2xl
+        fixed md:relative z-30 md:z-auto transition-transform duration-300 ease-out
+        inset-x-0 bottom-0 max-h-[65vh] rounded-t-2xl md:rounded-t-none md:inset-y-0 md:left-0 md:max-h-none md:h-auto
+        ${showHistory ? 'translate-y-0' : 'translate-y-full md:translate-y-0'}
+      `}>
+        {/* 移动端拖拽指示器 */}
+        <div className="md:hidden flex justify-center pt-2 pb-1">
+          <div className="w-10 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
+        </div>
         <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">选股历史</span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={handleNew}
-              className="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition"
-            >
-              + 新选股
-            </button>
-            <button
-              onClick={() => setShowHistory(false)}
-              className="md:hidden p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+          <button
+            onClick={handleNew}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 rounded-lg transition"
+          >
+            + 新选股
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto pb-[calc(env(safe-area-inset-bottom)+3.5rem)] md:pb-0">
           {conversations.length === 0 ? (
             <div className="p-6 text-center text-gray-400 text-xs">暂无选股记录</div>
           ) : (
@@ -579,8 +582,8 @@ export default function AIStockPicker() {
                 <div
                   key={conv.id}
                   onClick={() => loadConversationResult(conv)}
-                  className={`group px-3 py-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 flex items-center justify-between transition ${
-                    currentConv?.id === conv.id ? 'bg-indigo-50 dark:bg-indigo-900/20 border-r-2 border-indigo-500' : ''
+                  className={`group px-4 py-3 cursor-pointer flex items-center justify-between transition active:bg-gray-100 dark:active:bg-gray-700/50 ${
+                    currentConv?.id === conv.id ? 'bg-indigo-50 dark:bg-indigo-900/20 border-l-2 md:border-l-0 md:border-r-2 border-indigo-500' : ''
                   }`}
                 >
                   <div className="flex-1 min-w-0">
@@ -588,13 +591,13 @@ export default function AIStockPicker() {
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <span className="text-[11px] text-gray-400">{new Date(conv.updated_at).toLocaleDateString()}</span>
                       {isRunning && (
-                        <span className="text-[10px] px-1 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 animate-pulse">执行中</span>
                       )}
                     </div>
                   </div>
                   <button
                     onClick={(e) => deleteConversation(conv.id, e)}
-                    className="opacity-0 group-hover:opacity-100 ml-2 p-1 text-gray-400 hover:text-red-500 rounded transition"
+                    className="ml-2 p-1.5 text-gray-400 hover:text-red-500 rounded-lg transition md:opacity-0 md:group-hover:opacity-100"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -614,18 +617,18 @@ export default function AIStockPicker() {
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setShowHistory(true)}
-                className="md:hidden p-2 -ml-2 text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition"
+                className="md:hidden w-9 h-9 -ml-1 flex items-center justify-center rounded-full text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 active:bg-gray-200 transition"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
               </button>
-              <h2 className="text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
+              <h2 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white">AI 智能选股</h2>
             </div>
             {currentConv && !isLoading && (
               <button
                 onClick={handleNew}
-                className="text-xs px-3 py-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition"
+                className="text-xs px-3 py-2 rounded-xl bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 active:bg-indigo-200 transition"
               >
                 + 新选股
               </button>
@@ -739,7 +742,7 @@ export default function AIStockPicker() {
           {/* 流式文本 */}
           <div
             ref={progressRef}
-            className="max-h-64 overflow-y-auto p-4 text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap font-mono leading-relaxed"
+            className="max-h-[60vh] md:max-h-64 overflow-y-auto p-4 text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap font-mono leading-relaxed"
           >
             {progressText || '正在启动分析...'}
           </div>

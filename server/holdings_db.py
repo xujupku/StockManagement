@@ -1,11 +1,11 @@
 """持仓数据管理 - SQLite 存储（支持用户隔离）"""
 import sqlite3
-import os
 from contextlib import contextmanager
 from typing import Optional
 from pydantic import BaseModel
+from db_paths import get_db_path
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "holdings.db")
+DB_PATH = get_db_path("holdings.db")
 
 
 class HoldingItem(BaseModel):

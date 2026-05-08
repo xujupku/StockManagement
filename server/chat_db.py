@@ -1,10 +1,10 @@
 import sqlite3
-import os
 import uuid
 import json
 from datetime import datetime
+from db_paths import get_db_path
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "chat.db")
+DB_PATH = get_db_path("chat.db")
 
 
 def _get_conn():

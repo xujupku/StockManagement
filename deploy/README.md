@@ -90,7 +90,99 @@ sudo systemctl reload nginx
 
 ## 六、验证
 
-浏览器访问 `http://39.96.197.206`，应能看到应用首页。
+浏览器访问 `http://alphapilot.xin`，应能看到应用首页。
+
+## 七、域名接入（alphapilot.xin）
+
+### 1. 配置域名解析
+
+在阿里云 `云解析 DNS` 中添加：
+
+- `A  @    39.96.197.206`
+- `A  www  39.96.197.206`
+
+### 2. 放行安全组端口
+
+在阿里云 ECS 安全组中放行：
+
+- `TCP 80`
+- `TCP 443`
+
+### 3. 服务器上切换到域名访问
+
+```bash
+# SSH 到服务器
+ssh root@39.96.197.206
+
+# 确认前端代码和 Nginx 配置已更新
+cd /opt/StockProject
+
+# 重新构建前端
+npm install
+npm run build
+
+# 覆盖 Nginx 配置
+sudo cp /opt/StockProject/deploy/nginx.conf /etc/nginx/sites-available/stock
+
+# 启用站点
+sudo ln -sf /etc/nginx/sites-available/stock /etc/nginx/sites-enabled/stock
+sudo rm -f /etc/nginx/sites-enabled/default
+
+# 检查 Nginx 配置并重载
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+### 4. 申请 HTTPS 证书（推荐）
+
+```bash
+sudo apt update
+sudo apt install certbot python3-certbot-nginx -y
+
+# 为主域名和 www 域名签发证书
+sudo certbot --nginx -d alphapilot.xin -d www.alphapilot.xin
+```
+
+执行完成后，浏览器访问：
+
+- `https://alphapilot.xin`
+- `https://www.alphapilot.xin`
+
+### 5. 服务器完整执行清单
+
+```bash
+# 1) 上传代码
+rsync -avz --exclude 'node_modules' --exclude '*.db' --exclude '.env' \
+  /Users/bytedance/Project/StockProject/ \
+  root@39.96.197.206:/opt/StockProject/
+
+# 2) 登录服务器
+ssh root@39.96.197.206
+
+# 3) 安装依赖并构建前端
+cd /opt/StockProject
+npm install
+npm run build
+
+# 4) 启动 / 重启后端
+cd /opt/StockProject/server
+source venv/bin/activate
+sudo systemctl restart stock-backend
+
+# 5) 更新 Nginx 配置
+sudo cp /opt/StockProject/deploy/nginx.conf /etc/nginx/sites-available/stock
+sudo ln -sf /etc/nginx/sites-available/stock /etc/nginx/sites-enabled/stock
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+
+# 6) 签发 HTTPS 证书
+sudo certbot --nginx -d alphapilot.xin -d www.alphapilot.xin
+```
+
+### 6. 备案提醒
+
+如果你的阿里云服务器在中国大陆地域，`alphapilot.xin` 通常需要先完成 ICP 备案后，才能稳定以域名方式对外提供网站访问。
 
 ***
 
@@ -131,4 +223,3 @@ sudo systemctl restart stock-backend
 source ~/hermes_env/bin/activate
 nohup python3 main.py > py.log 2>&1 &
 ```
-

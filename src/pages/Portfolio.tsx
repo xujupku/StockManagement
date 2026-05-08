@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useStocks } from '../context/StockContext';
+import { useAIAdvisor } from '../context/AIAdvisorContext';
 
 interface ModalProps {
   onClose: () => void;
@@ -12,8 +14,8 @@ function StockModal({ onClose, onSubmit, initial, title }: ModalProps) {
   const [form, setForm] = useState(initial ?? { name: '', code: '', quantity: 0, buyPrice: 0 });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-md shadow-xl border border-gray-200 dark:border-gray-700" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white dark:bg-gray-900 rounded-t-2xl md:rounded-2xl p-6 pb-[calc(1.5rem+env(safe-area-inset-bottom)+3.5rem)] md:pb-6 w-full md:max-w-md shadow-xl border border-gray-200 dark:border-gray-700" onClick={e => e.stopPropagation()}>
         <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-4">{title}</h2>
         <div className="space-y-3">
           <div>
@@ -40,12 +42,12 @@ function StockModal({ onClose, onSubmit, initial, title }: ModalProps) {
           </div>
         </div>
         <div className="flex gap-3 mt-6">
-          <button onClick={onClose} className="flex-1 px-4 py-2 rounded-lg border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 transition">
+          <button onClick={onClose} className="flex-1 px-4 py-3 rounded-xl border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-400 text-sm font-medium hover:bg-gray-100 dark:hover:bg-gray-800 active:bg-gray-200 transition">
             取消
           </button>
           <button
             onClick={() => { if (form.code && form.quantity > 0 && form.buyPrice > 0) { onSubmit(form); onClose(); } }}
-            className="flex-1 px-4 py-2 rounded-lg bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 transition"
+            className="flex-1 px-4 py-3 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:bg-indigo-700 transition"
           >
             确认
           </button>
@@ -57,8 +59,11 @@ function StockModal({ onClose, onSubmit, initial, title }: ModalProps) {
 
 export default function Portfolio() {
   const { holdings, loading, addHolding, removeHolding, updateHolding, refreshPrices } = useStocks();
+  const { runningConvId } = useAIAdvisor();
+  const navigate = useNavigate();
   const [showAdd, setShowAdd] = useState(false);
   const [editCode, setEditCode] = useState<string | null>(null);
+  const isAnalyzing = !!runningConvId;
 
   // 持仓加载完成后立即刷新价格，之后每 60 秒刷新一次
   useEffect(() => {
@@ -73,12 +78,36 @@ export default function Portfolio() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">我的持仓</h2>
+        <h2 className="text-xl md:text-2xl font-bold text-gray-900 dark:text-white">我的持仓</h2>
         <button onClick={() => setShowAdd(true)}
-          className="px-4 py-2 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 transition shadow-sm">
+          className="px-4 py-2.5 rounded-xl bg-indigo-500 text-white text-sm font-medium hover:bg-indigo-600 active:bg-indigo-700 transition shadow-sm">
           + 添加股票
         </button>
       </div>
+
+      {/* AI 持仓分析入口 */}
+      {holdings.length > 0 && (
+        <button
+          onClick={() => navigate('/advisor')}
+          className="w-full flex items-center gap-3 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-500/5 dark:to-purple-500/5 border border-indigo-100 dark:border-indigo-500/20 rounded-2xl p-4 active:from-indigo-100 active:to-purple-100 dark:active:from-indigo-500/10 dark:active:to-purple-500/10 transition"
+        >
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+          </div>
+          <div className="flex-1 text-left min-w-0">
+            <p className="text-sm font-semibold text-gray-900 dark:text-white">
+              AI 持仓分析
+              {isAnalyzing && <span className="ml-2 text-xs text-indigo-500 animate-pulse">分析中...</span>}
+            </p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">智能诊断持仓健康度，生成调仓建议</p>
+          </div>
+          <svg className="w-5 h-5 text-gray-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
+      )}
 
       {/* 桌面端：表格 */}
       <div className="hidden md:block bg-white dark:bg-gray-900 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-800 overflow-hidden">

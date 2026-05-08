@@ -1,13 +1,14 @@
 """用户认证模块 - 注册/登录/JWT"""
 import sqlite3
-import os
 import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
+import os
+from db_paths import get_db_path
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "users.db")
+DB_PATH = get_db_path("users.db")
 
 # JWT 简易实现（避免额外依赖）
 import json
@@ -48,8 +49,13 @@ def _hash_password(password: str, salt: str) -> str:
     return hashlib.sha256((password + salt).encode('utf-8')).hexdigest()
 
 
+def _normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 def register_user(email: str, password: str) -> dict:
     """注册新用户，返回用户信息（不含密码）"""
+    email = _normalize_email(email)
     conn = _get_conn()
 
     # 检查邮箱是否已注册
@@ -63,11 +69,15 @@ def register_user(email: str, password: str) -> dict:
     password_hash = _hash_password(password, salt)
     now = datetime.now().isoformat()
 
-    conn.execute(
-        "INSERT INTO users (id, email, password_hash, salt, nickname, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, email, password_hash, salt, email.split('@')[0], now),
-    )
-    conn.commit()
+    try:
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, salt, nickname, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user_id, email, password_hash, salt, email.split('@')[0], now),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise ValueError("该邮箱已注册")
     conn.close()
 
     return {"id": user_id, "email": email, "nickname": email.split('@')[0], "created_at": now}
@@ -75,6 +85,7 @@ def register_user(email: str, password: str) -> dict:
 
 def verify_user(email: str, password: str) -> Optional[dict]:
     """验证用户密码，成功返回用户信息，失败返回 None"""
+    email = _normalize_email(email)
     conn = _get_conn()
     row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
     if not row:
@@ -103,6 +114,17 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
     row = conn.execute("SELECT id, email, nickname, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def list_user_ids(include_default: bool = True) -> list[str]:
+    """返回当前系统中的用户 ID 列表。"""
+    conn = _get_conn()
+    rows = conn.execute("SELECT id FROM users ORDER BY created_at ASC").fetchall()
+    conn.close()
+    user_ids = [row["id"] for row in rows]
+    if include_default and "default" not in user_ids:
+        user_ids.insert(0, "default")
+    return user_ids
 
 
 # ===== 简易 JWT =====

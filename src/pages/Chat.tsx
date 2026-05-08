@@ -79,9 +79,24 @@ export default function Chat() {
   const [toolStatus, setToolStatus] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const isInitialLoad = useRef(true);
   const userScrolledUp = useRef(false);
+  // 流式节流：避免每个 chunk 都触发 ReactMarkdown 重渲染
+  const streamBufferRef = useRef('');
+  const throttleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // textarea 自动增高
+  const autoResize = useCallback(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    // 最多 5 行高度 (5 * lineHeight ~20px + padding)
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }, []);
+
+  useEffect(() => { autoResize(); }, [input, autoResize]);
 
   // 检测用户是否手动上滑
   const handleScroll = useCallback(() => {
@@ -227,25 +242,49 @@ export default function Chat() {
     const abortController = new AbortController();
     abortRef.current = abortController;
 
+    let fullResponse = '';
     try {
-      let fullResponse = '';
+      streamBufferRef.current = '';
+
+      const flushStreamBuffer = (idx: number) => {
+        const content = streamBufferRef.current;
+        setMessages(prev => {
+          const updated = [...prev];
+          updated[idx] = { ...updated[idx], content, streaming: true };
+          return updated;
+        });
+      };
+
       await chatWithAIStream(
         text,
         convId,
         (chunk) => {
           fullResponse += chunk;
-          setMessages(prev => {
-            const updated = [...prev];
-            updated[assistantIdx] = { ...updated[assistantIdx], content: fullResponse, streaming: true };
-            return updated;
-          });
+          streamBufferRef.current = fullResponse;
+          // 节流：最多每 80ms 触发一次 React 重渲染
+          if (!throttleTimerRef.current) {
+            flushStreamBuffer(assistantIdx);
+            throttleTimerRef.current = setTimeout(() => {
+              throttleTimerRef.current = null;
+              // 定时器到期时再刷一次，确保最新内容可见
+              flushStreamBuffer(assistantIdx);
+            }, 80);
+          }
         },
         {
           onFinal: (finalContent) => {
-            fullResponse = finalContent;
+            // 仅当 final 非空时才覆盖，防止空 final 清除已有 delta 拼接内容
+            if (finalContent) {
+              fullResponse = finalContent;
+            }
+            // 清理节流定时器
+            if (throttleTimerRef.current) {
+              clearTimeout(throttleTimerRef.current);
+              throttleTimerRef.current = null;
+            }
             setMessages(prev => {
               const updated = [...prev];
-              updated[assistantIdx] = { ...updated[assistantIdx], content: finalContent, streaming: false };
+              updated[assistantIdx] = { ...updated[assistantIdx], content: fullResponse, streaming: false };
               return updated;
             });
             setToolStatus('');
@@ -262,25 +301,46 @@ export default function Chat() {
         },
       );
 
-      // 流结束后标记非 streaming
+      // 流结束后清理节流定时器，标记非 streaming
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+        throttleTimerRef.current = null;
+      }
       setMessages(prev => {
         const updated = [...prev];
         if (updated[assistantIdx]) {
-          updated[assistantIdx] = { ...updated[assistantIdx], streaming: false };
+          updated[assistantIdx] = { ...updated[assistantIdx], content: fullResponse, streaming: false };
         }
         return updated;
       });
       saveMessage(convId!, 'assistant', fullResponse);
     } catch (e: any) {
       if (e.name === 'AbortError') return;
-      setMessages(prev => {
-        const updated = [...prev];
-        const current = updated[assistantIdx];
-        if (current && !current.content) {
-          updated[assistantIdx] = { role: 'assistant', content: `⚠️ ${e.message || '请求失败'}` };
-        }
-        return updated;
-      });
+      // 清理节流定时器
+      if (throttleTimerRef.current) {
+        clearTimeout(throttleTimerRef.current);
+        throttleTimerRef.current = null;
+      }
+      // 连接断开但已有部分内容时，保存已积累的内容防止丢失
+      if (fullResponse) {
+        setMessages(prev => {
+          const updated = [...prev];
+          if (updated[assistantIdx]) {
+            updated[assistantIdx] = { ...updated[assistantIdx], content: fullResponse, streaming: false };
+          }
+          return updated;
+        });
+        saveMessage(convId!, 'assistant', fullResponse);
+      } else {
+        setMessages(prev => {
+          const updated = [...prev];
+          const current = updated[assistantIdx];
+          if (current && !current.content) {
+            updated[assistantIdx] = { role: 'assistant', content: `⚠️ ${e.message || '请求失败'}` };
+          }
+          return updated;
+        });
+      }
     } finally {
       abortRef.current = null;
       setLoading(false);
@@ -296,40 +356,36 @@ export default function Chat() {
   };
 
   return (
-    <div className="h-[calc(100vh-3.25rem)] md:h-screen -m-4 md:-m-8 flex flex-col md:flex-row bg-white dark:bg-gray-950 overflow-hidden">
+    <div className="h-full md:h-full -m-4 md:-m-8 flex flex-col md:flex-row bg-white dark:bg-gray-950 overflow-hidden">
       {/* 左侧：历史会话列表 */}
       {/* 移动端遮罩 */}
       {showHistory && (
         <div
-          className="md:hidden fixed inset-0 bg-black/30 z-20"
+          className="md:hidden fixed inset-0 bg-black/40 z-20"
           onClick={() => setShowHistory(false)}
         />
       )}
+      {/* 移动端：底部弹出面板 / 桌面端：左侧侧边栏 */}
       <div className={`
-        w-56 shrink-0 border-r border-gray-200 dark:border-gray-700 flex flex-col bg-white dark:bg-gray-900
-        fixed md:static inset-y-0 left-0 z-30 md:z-auto transition-transform duration-300
-        ${showHistory ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+        md:w-56 md:shrink-0 md:border-r border-gray-200 dark:border-gray-700 flex flex-col bg-white dark:bg-gray-900
+        fixed md:static z-30 md:z-auto transition-transform duration-300 ease-out
+        inset-x-0 bottom-0 max-h-[65vh] rounded-t-2xl md:rounded-none md:inset-y-0 md:left-0 md:max-h-none md:h-auto
+        ${showHistory ? 'translate-y-0' : 'translate-y-full md:translate-y-0'}
       `}>
+        {/* 移动端拖拽指示器 */}
+        <div className="md:hidden flex justify-center pt-2 pb-1">
+          <div className="w-10 h-1 rounded-full bg-gray-300 dark:bg-gray-600" />
+        </div>
         <div className="p-3 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between">
           <span className="text-sm font-semibold text-gray-700 dark:text-gray-200">历史会话</span>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={createNewConversation}
-              className="px-2 py-1 text-xs font-medium text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 rounded-lg transition"
-            >
-              + 新对话
-            </button>
-            <button
-              onClick={() => setShowHistory(false)}
-              className="md:hidden p-1 text-gray-400 hover:text-gray-600 rounded"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+          <button
+            onClick={createNewConversation}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-600 active:bg-indigo-700 rounded-lg transition"
+          >
+            + 新对话
+          </button>
         </div>
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto pb-[calc(env(safe-area-inset-bottom)+3.5rem)] md:pb-0">
           {conversations.length === 0 ? (
             <div className="p-6 text-center text-gray-400 text-xs">暂无历史会话</div>
           ) : (
@@ -337,8 +393,8 @@ export default function Chat() {
               <div
                 key={conv.id}
                 onClick={() => selectConversation(conv)}
-                className={`group px-3 py-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700/50 flex items-center justify-between transition ${
-                  currentConv?.id === conv.id ? 'bg-indigo-50 dark:bg-indigo-900/20 border-r-2 border-indigo-500' : ''
+                className={`group px-4 py-3 cursor-pointer flex items-center justify-between transition active:bg-gray-100 dark:active:bg-gray-700/50 ${
+                  currentConv?.id === conv.id ? 'bg-indigo-50 dark:bg-indigo-900/20 border-l-2 md:border-l-0 md:border-r-2 border-indigo-500' : ''
                 }`}
               >
                 <div className="flex-1 min-w-0">
@@ -349,7 +405,7 @@ export default function Chat() {
                 </div>
                 <button
                   onClick={(e) => deleteConversation(conv.id, e)}
-                  className="opacity-0 group-hover:opacity-100 ml-2 p-1 text-gray-400 hover:text-red-500 rounded transition"
+                  className="ml-2 p-1.5 text-gray-400 hover:text-red-500 rounded-lg transition md:opacity-0 md:group-hover:opacity-100"
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -368,7 +424,7 @@ export default function Chat() {
           <div className="flex items-center gap-2 min-w-0">
             <button
               onClick={() => setShowHistory(true)}
-              className="md:hidden shrink-0 p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 transition"
+              className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center rounded-full text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700 active:bg-gray-200 dark:active:bg-gray-600 transition"
             >
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -381,6 +437,14 @@ export default function Chat() {
               <p className="hidden md:block text-xs text-gray-500 dark:text-gray-400 mt-0.5">随时询问股票相关问题，获取专业投资建议</p>
             </div>
           </div>
+          <button
+            onClick={createNewConversation}
+            className="md:hidden shrink-0 w-9 h-9 flex items-center justify-center rounded-full text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-900/30 active:bg-indigo-100 transition"
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+            </svg>
+          </button>
         </div>
 
         {/* 消息区域 */}
@@ -445,31 +509,36 @@ export default function Chat() {
         <div className="px-3 md:px-6 py-2 md:py-3 border-t border-gray-100 dark:border-gray-800 shrink-0">
           <div className="max-w-5xl mx-auto flex items-end gap-2">
             <textarea
+              ref={textareaRef}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="输入问题... (Enter发送)"
+              placeholder="输入问题..."
               rows={1}
-              className="flex-1 resize-none px-3 py-2 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none placeholder-gray-400 shadow-sm"
+              className="flex-1 resize-none px-4 py-2.5 rounded-2xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-indigo-500 focus:bg-white dark:focus:bg-gray-800 outline-none placeholder-gray-400 transition max-h-[120px] overflow-y-auto"
             />
             {loading ? (
               <button
                 onClick={() => abortRef.current?.abort()}
-                className="shrink-0 px-3 md:px-4 py-2 rounded-xl font-medium text-sm transition shadow-sm bg-red-500 text-white hover:bg-red-600"
+                className="shrink-0 w-10 h-10 flex items-center justify-center rounded-full font-medium text-sm transition bg-red-500 text-white active:bg-red-600 shadow-sm"
               >
-                停止
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 6h12v12H6z" />
+                </svg>
               </button>
             ) : (
               <button
                 onClick={handleSend}
                 disabled={!input.trim()}
-                className={`shrink-0 px-3 md:px-4 py-2 rounded-xl font-medium text-sm transition shadow-sm ${
+                className={`shrink-0 w-10 h-10 flex items-center justify-center rounded-full font-medium text-sm transition shadow-sm ${
                   input.trim()
-                    ? 'bg-indigo-500 text-white hover:bg-indigo-600'
+                    ? 'bg-indigo-500 text-white active:bg-indigo-600'
                     : 'bg-gray-200 dark:bg-gray-700 text-gray-400 cursor-not-allowed'
                 }`}
               >
-                发送
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
+                </svg>
               </button>
             )}
           </div>

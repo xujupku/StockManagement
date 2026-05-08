@@ -2,25 +2,12 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "AI股票投资管家",
   "version": "0.1.0",
-  "identifier": "com.stock.advisor",
+  "identifier": "com.yourname.stockadvisor.stockadvisor",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "AI股票投资管家",
-        "width": 1280,
-        "height": 800,
-        "minWidth": 900,
-        "minHeight": 600,
-        "resizable": true,
-        "fullscreen": false
-      }
-    ],
     "security": {
       "csp": "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self' http://39.96.197.206:8000 http://localhost:8000 https://*; img-src 'self' data: https://*; style-src 'self' 'unsafe-inline';"
     }

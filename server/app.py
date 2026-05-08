@@ -3,6 +3,7 @@ import re
 import threading
 from datetime import datetime
 from contextlib import asynccontextmanager
+from typing import List, Dict, Any, Optional
 
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Query, Request
@@ -28,7 +29,7 @@ from chat_db import (
     get_hermes_messages, save_hermes_messages,
 )
 from auth_db import (
-    register_user, verify_user, get_user_by_id,
+    register_user, verify_user, get_user_by_id, list_user_ids,
     create_token, verify_token as verify_jwt_token,
 )
 from activity_log_db import insert_logs, query_logs, get_log_stats
@@ -40,7 +41,44 @@ from run_agent import AIAgent
 
 load_dotenv()
 
-_hermes_lock = threading.Lock()
+# ─── 线程级 HERMES_HOME 隔离 ───
+# AIAgent 内部通过 os.environ["HERMES_HOME"] 获取路径，这是进程全局变量。
+# 为支持多用户并发，使用 threading.local 为每个线程维护独立的 HERMES_HOME。
+_thread_local = threading.local()
+_OriginalEnvironClass = os.environ.__class__
+_original_environ_getitem = _OriginalEnvironClass.__getitem__
+_original_environ_get = _OriginalEnvironClass.get
+
+def _patched_environ_getitem(self, key):
+    if key == "HERMES_HOME":
+        val = getattr(_thread_local, "hermes_home", None)
+        if val is not None:
+            return val
+    return _original_environ_getitem(self, key)
+
+def _patched_environ_get(self, key, default=None):
+    if key == "HERMES_HOME":
+        val = getattr(_thread_local, "hermes_home", None)
+        if val is not None:
+            return val
+    return _original_environ_get(self, key, default)
+
+_OriginalEnvironClass.__getitem__ = _patched_environ_getitem
+_OriginalEnvironClass.get = _patched_environ_get
+
+# os.getenv 底层也读 os.environ，但部分实现直接绑定了原始方法，需要额外 patch
+_original_getenv = os.getenv
+
+def _patched_getenv(key, default=None):
+    if key == "HERMES_HOME":
+        val = getattr(_thread_local, "hermes_home", None)
+        if val is not None:
+            return val
+    return _original_getenv(key, default)
+
+os.getenv = _patched_getenv
+
+DEFAULT_CHAT_HISTORY_TURN_LIMIT = 10
 
 
 SINA_API = "https://hq.sinajs.cn"
@@ -152,10 +190,14 @@ async def _snapshot_scheduler():
         await asyncio.sleep(wait_seconds)
 
         try:
-            total = await _compute_total_assets_cny()
             today = datetime.now(bj_tz).strftime('%Y-%m-%d')
-            add_asset_snapshot(today, total)
-            print(f"[Snapshot] {today} total_cny={total:.2f}")
+            for user_id in list_user_ids():
+                try:
+                    total = await _compute_total_assets_cny(user_id)
+                    add_asset_snapshot(today, total, user_id)
+                    print(f"[Snapshot] {today} user={user_id} total_cny={total:.2f}")
+                except Exception as user_exc:
+                    print(f"[Snapshot] 用户 {user_id} 记录失败: {user_exc}")
         except Exception as e:
             print(f"[Snapshot] 记录失败: {e}")
 
@@ -198,6 +240,7 @@ def run_agent_for_user(
     provider: str = "DeepSeek",
     tool_start_callback=None,
     tool_complete_callback=None,
+    conv_id: str = None,
 ):
     user_session_id = f"session_{user_id}"
     user_hermes_home = os.path.abspath(
@@ -205,11 +248,14 @@ def run_agent_for_user(
     )
     os.makedirs(user_hermes_home, exist_ok=True)
 
+    # 每个 conversation 使用独立的 session_id，便于日志隔离和问题排查
+    effective_session_id = conv_id if conv_id else user_id
+
     agent_kwargs = dict(
         provider=provider,
         base_url=base_url,
         model=model,
-        session_id=user_session_id,
+        session_id=effective_session_id,
         quiet_mode=True,
     )
     if api_key:
@@ -219,28 +265,66 @@ def run_agent_for_user(
     if tool_complete_callback:
         agent_kwargs['tool_complete_callback'] = tool_complete_callback
 
-    with _hermes_lock:
-        old_home = os.environ.get("HERMES_HOME")
-        try:
-            os.environ["HERMES_HOME"] = user_hermes_home
-            ai = AIAgent(**agent_kwargs)
-            result = ai.run_conversation(
-                query,
-                conversation_history=conversation_history,
-                stream_callback=stream_callback,
-            )
-        finally:
-            if old_home is not None:
-                os.environ["HERMES_HOME"] = old_home
-            else:
-                os.environ.pop("HERMES_HOME", None)
+    # 通过 threading.local 设置当前线程的 HERMES_HOME，支持多用户并发
+    _thread_local.hermes_home = user_hermes_home
+    try:
+        ai = AIAgent(**agent_kwargs)
+        result = ai.run_conversation(
+            query,
+            conversation_history=conversation_history,
+            stream_callback=stream_callback,
+        )
+    finally:
+        _thread_local.hermes_home = None
 
     return result
 
 
-# ===== 用户认证 API =====
 
-from typing import List, Dict, Any, Optional
+def get_chat_history_turn_limit() -> int:
+    raw_value = os.getenv("CHAT_HISTORY_TURN_LIMIT", str(DEFAULT_CHAT_HISTORY_TURN_LIMIT)).strip()
+    try:
+        limit = int(raw_value)
+    except ValueError:
+        return DEFAULT_CHAT_HISTORY_TURN_LIMIT
+    return limit if limit >= -1 else DEFAULT_CHAT_HISTORY_TURN_LIMIT
+
+
+def trim_conversation_history(messages: Optional[list], max_turns: int) -> Optional[list]:
+    if not messages or max_turns == -1:
+        return messages
+    if max_turns == 0:
+        return [
+            msg for msg in messages
+            if isinstance(msg, dict) and msg.get("role") in {"system", "developer"}
+        ]
+
+    # From the end, count the most recent N user messages and keep everything
+    # after the earliest kept user message, including tool/assistant content.
+    remaining_user_messages = max_turns
+    start_index = None
+    for index in range(len(messages) - 1, -1, -1):
+        msg = messages[index]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        remaining_user_messages -= 1
+        start_index = index
+        if remaining_user_messages == 0:
+            break
+
+    if start_index is None or remaining_user_messages > 0:
+        return messages
+
+    preserved_prefix = [
+        msg for msg in messages[:start_index]
+        if isinstance(msg, dict) and msg.get("role") in {"system", "developer"}
+    ]
+    return preserved_prefix + messages[start_index:]
+
+
+# ===== 用户认证 API =====
 
 class RegisterRequest(BaseModel):
     email: str
@@ -303,7 +387,10 @@ class QueryRequest(BaseModel):
 @app.post("/api/v1/run")
 async def run_hermes(request: QueryRequest, req: Request):
     user_id = get_user_id(req)
-    history = get_hermes_messages(request.conv_id) if request.conv_id else None
+    history = trim_conversation_history(
+        get_hermes_messages(request.conv_id) if request.conv_id else None,
+        get_chat_history_turn_limit(),
+    )
 
     if request.exa_key:
         os.environ["EXA_API_KEY"] = request.exa_key
@@ -317,6 +404,7 @@ async def run_hermes(request: QueryRequest, req: Request):
             model=request.model,
             api_key=request.api_key,
             provider=request.provider,
+            conv_id=request.conv_id,
         )
 
     try:
@@ -350,7 +438,10 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
 
     async def generate():
         q: _queue.Queue = _queue.Queue()
-        history = get_hermes_messages(request.conv_id) if request.conv_id else None
+        history = trim_conversation_history(
+            get_hermes_messages(request.conv_id) if request.conv_id else None,
+            get_chat_history_turn_limit(),
+        )
 
         def _stream_callback(delta: str):
             if delta:
@@ -378,6 +469,7 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
                     provider=request.provider,
                     tool_start_callback=_tool_start_cb,
                     tool_complete_callback=_tool_complete_cb,
+                    conv_id=request.conv_id,
                 )
 
                 if isinstance(result, dict):
@@ -390,6 +482,15 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
                 if request.conv_id and hermes_msgs:
                     save_hermes_messages(request.conv_id, hermes_msgs)
 
+                # 如果 final_response 为空，尝试从 messages 中提取最后一条 assistant 回复
+                if not final and hermes_msgs:
+                    for msg in reversed(hermes_msgs):
+                        if isinstance(msg, dict) and msg.get('role') == 'assistant':
+                            content = msg.get('content', '')
+                            if isinstance(content, str) and content.strip():
+                                final = content
+                                break
+
                 q.put(("done", final))
                 return result
             except Exception as exc:
@@ -399,11 +500,19 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
         loop = asyncio.get_event_loop()
         future = loop.run_in_executor(None, _run_agent)
 
+        # 心跳间隔（秒）：防止 Nginx/浏览器因长时间无数据而断开连接
+        HEARTBEAT_INTERVAL = 15
+
         while True:
             try:
-                item = await asyncio.to_thread(q.get, timeout=600)
+                item = await asyncio.to_thread(q.get, timeout=HEARTBEAT_INTERVAL)
             except Exception:
-                break
+                # 队列超时：检查 agent 是否仍在运行
+                if future.done():
+                    break
+                # 发送心跳保活
+                yield ": heartbeat\n\n"
+                continue
 
             msg_type, payload = item
 
@@ -758,8 +867,28 @@ async def api_delete_conversation(conv_id: str):
 
 @app.get("/api/conversations/{conv_id}/messages")
 async def api_get_messages(conv_id: str):
-    """获取会话的所有消息"""
-    return get_messages(conv_id)
+    """获取会话的所有消息，自动补录因连接中断丢失的 assistant 回复"""
+    msgs = get_messages(conv_id)
+
+    # 检查是否存在 user 消息后没有对应 assistant 回复的情况
+    if msgs and msgs[-1].get('role') == 'user':
+        # 最后一条是 user 消息，说明 assistant 回复可能丢失
+        hermes = get_hermes_messages(conv_id)
+        if hermes:
+            # 从 hermes_messages 中提取最后一条有内容的 assistant 回复
+            last_assistant = ''
+            for m in reversed(hermes):
+                if isinstance(m, dict) and m.get('role') == 'assistant':
+                    content = m.get('content', '')
+                    if isinstance(content, str) and content.strip():
+                        last_assistant = content
+                        break
+            if last_assistant:
+                # 补录到 messages 表
+                added = add_message(conv_id, 'assistant', last_assistant)
+                msgs.append(added)
+
+    return msgs
 
 
 @app.post("/api/conversations/{conv_id}/messages")

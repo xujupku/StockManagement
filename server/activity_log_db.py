@@ -1,9 +1,9 @@
 """用户操作日志存储模块"""
 import sqlite3
-import os
 from datetime import datetime
+from db_paths import get_db_path
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'activity_log.db')
+DB_PATH = get_db_path('activity_log.db')
 
 
 def init_activity_log_db():
