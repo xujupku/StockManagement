@@ -433,6 +433,7 @@ async def run_hermes(request: QueryRequest, req: Request):
 async def run_hermes_stream(request: QueryRequest, req: Request):
     import queue as _queue
     import json as _json
+    import re as _re
 
     user_id = get_user_id(req)
 
@@ -443,15 +444,78 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
             get_chat_history_turn_limit(),
         )
 
+        # === 流式过滤状态 ===
+        # 1. Think-block 有状态 scrubber（跨 chunk 处理 <think>...</think>）
+        _in_think = [False]
+        _think_buf = ['']
+
+        def _scrub_think(text: str) -> str:
+            """过滤 <think>/<reasoning> 标签内容，返回可安全输出的文本"""
+            if not text:
+                return ''
+            result = []
+            i = 0
+            buf = _think_buf[0] + text
+            _think_buf[0] = ''
+
+            while i < len(buf):
+                if _in_think[0]:
+                    # 寻找结束标签
+                    end_match = _re.search(r'</(?:think|reasoning)>', buf[i:])
+                    if end_match:
+                        i += end_match.end()
+                        _in_think[0] = False
+                    else:
+                        # 可能标签被拆分到下一个 chunk，缓存末尾
+                        _think_buf[0] = buf[max(i, len(buf)-20):]
+                        break
+                else:
+                    # 寻找开始标签
+                    start_match = _re.search(r'<(?:think|reasoning)>', buf[i:])
+                    if start_match:
+                        result.append(buf[i:i+start_match.start()])
+                        i += start_match.end()
+                        _in_think[0] = True
+                    else:
+                        # 检查是否有不完整的开始标签在末尾
+                        partial = _re.search(r'<(?:t(?:h(?:i(?:n(?:k)?)?)?)?|r(?:e(?:a(?:s(?:o(?:n(?:i(?:n(?:g)?)?)?)?)?)?)?)?)?$', buf[i:])
+                        if partial:
+                            result.append(buf[i:i+partial.start()])
+                            _think_buf[0] = buf[i+partial.start():]
+                        else:
+                            result.append(buf[i:])
+                        break
+            return ''.join(result)
+
+        # 2. 流式输出控制
+        _first_delta = [True]        # 首个 delta 去除前导换行
+
         def _stream_callback(delta: str):
-            if delta:
-                q.put(("delta", delta))
+            if not delta:
+                return
+
+            # 过滤 think-block
+            filtered = _scrub_think(delta)
+            if not filtered:
+                return
+
+            # 首个 delta 去除前导换行
+            if _first_delta[0]:
+                filtered = filtered.lstrip('\n')
+                if not filtered:
+                    return
+                _first_delta[0] = False
+
+            q.put(("delta", filtered))
 
         def _tool_start_cb(tool_call_id: str, name: str, args: dict):
+            _tool_active[0] = True
             q.put(("tool_start", {"name": name, "args": {k: str(v)[:100] for k, v in (args or {}).items() if k != "content"}}))
 
         def _tool_complete_cb(tool_call_id: str, name: str, args: dict, result: str):
             q.put(("tool_complete", {"name": name, "duration": None}))
+            # 工具完成后，下一段文本前插入段落分隔
+            _first_delta[0] = True
 
         def _run_agent():
             if request.exa_key:
@@ -522,8 +586,11 @@ async def run_hermes_stream(request: QueryRequest, req: Request):
             elif msg_type == "error":
                 yield f"data: {_json.dumps({'type': 'error', 'content': payload}, ensure_ascii=False)}\n\n"
                 break
-            elif msg_type in ("tool_start", "tool_complete"):
-                yield f"data: {_json.dumps({'type': msg_type, 'content': payload}, ensure_ascii=False)}\n\n"
+            elif msg_type == "tool_start":
+                # 工具开始 → 通知前端之前的 delta 是中间过渡文本
+                yield f"data: {_json.dumps({'type': 'tool_start', 'content': payload}, ensure_ascii=False)}\n\n"
+            elif msg_type == "tool_complete":
+                yield f"data: {_json.dumps({'type': 'tool_complete', 'content': payload}, ensure_ascii=False)}\n\n"
             else:
                 yield f"data: {_json.dumps({'type': 'delta', 'content': payload}, ensure_ascii=False)}\n\n"
 

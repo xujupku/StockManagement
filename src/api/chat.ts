@@ -12,6 +12,7 @@ export interface ToolEvent {
 export interface StreamOptions {
   onFinal?: (text: string) => void;
   onToolEvent?: (event: ToolEvent) => void;
+  onSegmentReset?: () => void;  // 工具开始时调用，通知重置之前的中间文本
   signal?: AbortSignal;
 }
 
@@ -21,7 +22,7 @@ export async function chatWithAIStream(
   onChunk: (text: string) => void,
   options?: StreamOptions,
 ): Promise<void> {
-  const { onFinal, onToolEvent, signal } = options || {};
+  const { onFinal, onToolEvent, onSegmentReset, signal } = options || {};
 
   const response = await authFetch(API_URL, {
     method: 'POST',
@@ -74,6 +75,9 @@ export async function chatWithAIStream(
       }
 
       if (msg.type === 'tool_start' || msg.type === 'tool_complete') {
+        if (msg.type === 'tool_start' && onSegmentReset) {
+          onSegmentReset();
+        }
         if (onToolEvent) {
           onToolEvent({ type: msg.type, name: msg.content.name, args: msg.content.args });
         }

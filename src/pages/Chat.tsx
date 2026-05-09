@@ -55,18 +55,78 @@ function fixMarkdownTables(text: string): string {
   return (prefix ? prefix + '\n\n' : '') + table;
 }
 
-const TOOL_NAMES: Record<string, string> = {
-  web_search: '网络搜索',
-  web_extract: '网页提取',
-  browser_navigate: '浏览网页',
-  read_file: '读取文件',
-  write_file: '写入文件',
-  run_command: '执行命令',
-  search_code: '搜索代码',
+/** 流式 think-block 过滤器（跨 chunk 有状态） */
+function createThinkScrubber() {
+  let inThink = false;
+  let buf = '';
+  return (text: string): string => {
+    if (!text) return '';
+    buf += text;
+    let result = '';
+    let i = 0;
+    while (i < buf.length) {
+      if (inThink) {
+        const end = buf.indexOf('</think>', i) !== -1
+          ? buf.indexOf('</think>', i)
+          : buf.indexOf('</reasoning>', i);
+        if (end !== -1) {
+          const tag = buf.indexOf('</think>', i) === end ? '</think>' : '</reasoning>';
+          i = end + tag.length;
+          inThink = false;
+        } else {
+          buf = buf.slice(Math.max(i, buf.length - 20));
+          return result;
+        }
+      } else {
+        const startThink = buf.indexOf('<think>', i);
+        const startReason = buf.indexOf('<reasoning>', i);
+        let start = -1;
+        let tagLen = 0;
+        if (startThink !== -1 && (startReason === -1 || startThink <= startReason)) {
+          start = startThink; tagLen = 7;
+        } else if (startReason !== -1) {
+          start = startReason; tagLen = 11;
+        }
+        if (start !== -1) {
+          result += buf.slice(i, start);
+          i = start + tagLen;
+          inThink = true;
+        } else {
+          // 检查末尾是否有不完整的 < 标签
+          const lastLt = buf.lastIndexOf('<', buf.length - 1);
+          if (lastLt > i && lastLt > buf.length - 15) {
+            result += buf.slice(i, lastLt);
+            buf = buf.slice(lastLt);
+          } else {
+            result += buf.slice(i);
+            buf = '';
+          }
+          return result;
+        }
+      }
+    }
+    buf = '';
+    return result;
+  };
+}
+
+const TOOL_NAMES: Record<string, { icon: string; label: string }> = {
+  web_search: { icon: '🔍', label: '网络搜索' },
+  web_extract: { icon: '🌐', label: '网页提取' },
+  browser_navigate: { icon: '🌐', label: '浏览网页' },
+  read_file: { icon: '📖', label: '读取文件' },
+  write_file: { icon: '✏️', label: '写入文件' },
+  run_command: { icon: '💻', label: '执行命令' },
+  search_code: { icon: '🔎', label: '搜索代码' },
+  search_files: { icon: '🔎', label: '搜索文件' },
+  skills_list: { icon: '📚', label: '查找技能' },
+  skill_view: { icon: '📚', label: '查看技能' },
+  terminal: { icon: '💻', label: '终端' },
+  todo: { icon: '📋', label: '任务管理' },
 };
 
-function getToolDisplayName(name: string): string {
-  return TOOL_NAMES[name] || name;
+function getToolDisplayInfo(name: string): { icon: string; label: string } {
+  return TOOL_NAMES[name] || { icon: '🔧', label: name };
 }
 
 export default function Chat() {
@@ -76,7 +136,7 @@ export default function Chat() {
   const [showHistory, setShowHistory] = useState(false);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [toolStatus, setToolStatus] = useState('');
+  const [toolCalls, setToolCalls] = useState<{name: string; args?: string; status: 'running' | 'done'}[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -230,6 +290,7 @@ export default function Chat() {
     setMessages(prevMessages);
     setInput('');
     setLoading(true);
+    setToolCalls([]);
 
     saveMessage(convId!, 'user', text);
     if (messages.length === 0) {
@@ -245,6 +306,7 @@ export default function Chat() {
     let fullResponse = '';
     try {
       streamBufferRef.current = '';
+      const scrubThink = createThinkScrubber();
 
       const flushStreamBuffer = (idx: number) => {
         const content = streamBufferRef.current;
@@ -259,7 +321,10 @@ export default function Chat() {
         text,
         convId,
         (chunk) => {
-          fullResponse += chunk;
+          // 前端防御层：过滤 think-block
+          const filtered = scrubThink(chunk);
+          if (!filtered) return;
+          fullResponse += filtered;
           streamBufferRef.current = fullResponse;
           // 节流：最多每 80ms 触发一次 React 重渲染
           if (!throttleTimerRef.current) {
@@ -275,7 +340,8 @@ export default function Chat() {
           onFinal: (finalContent) => {
             // 仅当 final 非空时才覆盖，防止空 final 清除已有 delta 拼接内容
             if (finalContent) {
-              fullResponse = finalContent;
+              // final 内容也需要过滤 think-block
+              fullResponse = finalContent.replace(/<(?:think|reasoning)>[\s\S]*?<\/(?:think|reasoning)>/g, '');
             }
             // 清理节流定时器
             if (throttleTimerRef.current) {
@@ -287,14 +353,26 @@ export default function Chat() {
               updated[assistantIdx] = { ...updated[assistantIdx], content: fullResponse, streaming: false };
               return updated;
             });
-            setToolStatus('');
+            setToolCalls([]);
+          },
+          onSegmentReset: () => {
+            // 工具开始时：之前的 delta 是中间过渡文本，重置
+            fullResponse = '';
+            streamBufferRef.current = '';
           },
           onToolEvent: (event: ToolEvent) => {
-            const name = getToolDisplayName(event.name);
+            const argsPreview = event.args
+              ? Object.values(event.args).join(' ').slice(0, 40)
+              : '';
             if (event.type === 'tool_start') {
-              setToolStatus(`🔧 正在执行: ${name}...`);
+              setToolCalls(prev => [...prev, { name: event.name, args: argsPreview, status: 'running' }]);
             } else {
-              setToolStatus(`✅ 已完成: ${name}`);
+              setToolCalls(prev => {
+                const updated = [...prev];
+                const lastIdx = updated.findLastIndex(t => t.name === event.name && t.status === 'running');
+                if (lastIdx >= 0) updated[lastIdx] = { ...updated[lastIdx], status: 'done' };
+                return updated;
+              });
             }
           },
           signal: abortController.signal,
@@ -344,7 +422,7 @@ export default function Chat() {
     } finally {
       abortRef.current = null;
       setLoading(false);
-      setToolStatus('');
+      setToolCalls([]);
     }
   }, [input, loading, messages, currentConv, saveMessage, updateTitle, loadConversations]);
 
@@ -496,11 +574,29 @@ export default function Chat() {
           </div>
         </div>
 
-        {/* 工具状态指示器 */}
-        {toolStatus && (
-          <div className="px-3 md:px-6 py-1.5 border-t border-gray-50 dark:border-gray-800 shrink-0">
-            <div className="text-xs text-gray-500 dark:text-gray-400 animate-pulse">
-              {toolStatus}
+        {/* 工具调用列表 */}
+        {toolCalls.length > 0 && (
+          <div className="px-3 md:px-6 py-2 border-t border-gray-100 dark:border-gray-800 shrink-0 max-h-[120px] overflow-y-auto">
+            <div className="max-w-5xl mx-auto space-y-0.5">
+              {toolCalls.map((tool, i) => {
+                const info = getToolDisplayInfo(tool.name);
+                return (
+                  <div key={i} className={`flex items-center gap-1.5 text-xs font-mono ${
+                    tool.status === 'running'
+                      ? 'text-indigo-600 dark:text-indigo-400'
+                      : 'text-gray-400 dark:text-gray-500'
+                  }`}>
+                    <span className="shrink-0">{tool.status === 'running' ? info.icon : '✓'}</span>
+                    <span className="font-medium">{info.label}</span>
+                    {tool.args && (
+                      <span className="truncate opacity-70">: &quot;{tool.args}&quot;</span>
+                    )}
+                    {tool.status === 'running' && (
+                      <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" />
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
