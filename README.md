@@ -81,4 +81,12 @@ npx tauri build
 
 
 # 同步文件到服务器
+npm run build
+rsync -avz dist root@39.96.197.206:/opt/StockProject/
 rsync -avz src root@39.96.197.206:/opt/StockProject/
+rsync -avz --exclude '*.db' --exclude '__pycache__' server root@39.96.197.206:/opt/StockProject/
+
+# 服务器上重启
+sudo systemctl restart stock-backend
+source ~/hermes_env/bin/activate
+ps aux | grep "python3 main.py" | grep -v grep | awk '{print $2}' | xargs kill && nohup python3 main.py > py.log 2>&1 &
